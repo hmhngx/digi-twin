@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="420">
+  <rect width="100%" height="100%" fill="#fff"/>
+  <text x="50" y="30" font-size="16" font-family="Segoe UI, sans-serif">Sensor-count (E2E to Influx)</text>
+  <text x="550" y="30" font-size="16" font-family="Segoe UI, sans-serif">Client-count (single Thing)</text>
+  <rect x="50" y="50" width="400" height="300" fill="none" stroke="#ccc"/>
+  <rect x="550" y="50" width="400" height="300" fill="none" stroke="#ccc"/>
+  <polyline fill="none" stroke="#1f77b4" stroke-width="2" points="90.0,102.3 130.0,68.2 210.0,50.2 290.0,102.5 370.0,59.2 450.0,50.0" /><circle cx="90.0" cy="102.3" r="3" fill="#1f77b4" /><circle cx="130.0" cy="68.2" r="3" fill="#1f77b4" /><circle cx="210.0" cy="50.2" r="3" fill="#1f77b4" /><circle cx="290.0" cy="102.5" r="3" fill="#1f77b4" /><circle cx="370.0" cy="59.2" r="3" fill="#1f77b4" /><circle cx="450.0" cy="50.0" r="3" fill="#1f77b4" />
+  <polyline fill="none" stroke="#ff7f0e" stroke-width="2" points="570.0,138.7 650.0,105.2 750.0,107.9 850.0,50.0 950.0,150.4" /><circle cx="570.0" cy="138.7" r="3" fill="#ff7f0e" /><circle cx="650.0" cy="105.2" r="3" fill="#ff7f0e" /><circle cx="750.0" cy="107.9" r="3" fill="#ff7f0e" /><circle cx="850.0" cy="50.0" r="3" fill="#ff7f0e" /><circle cx="950.0" cy="150.4" r="3" fill="#ff7f0e" />
+  <text x="50" y="380" font-size="12" font-family="Segoe UI, sans-serif">x = concurrent sensors / clients; y = avg latency (s)</text>
+</svg>
