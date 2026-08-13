@@ -42,7 +42,7 @@
             "spanNulls": false
           },
           "unit": "percent",
-          "displayName": "{{thingId}}"
+          "displayName": "${__field.labels.thingId}"
         },
         "overrides": []
       },
@@ -84,7 +84,7 @@
             "showPoints": "never"
           },
           "unit": "percent",
-          "displayName": "{{thingId}}"
+          "displayName": "${__field.labels.thingId}"
         },
         "overrides": []
       },
@@ -126,7 +126,7 @@
             "showPoints": "never"
           },
           "unit": "percent",
-          "displayName": "{{thingId}}"
+          "displayName": "${__field.labels.thingId}"
         },
         "overrides": []
       },
