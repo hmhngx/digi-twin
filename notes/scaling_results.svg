@@ -1,11 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="420">
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="840">
   <rect width="100%" height="100%" fill="#fff"/>
-  <text x="50" y="30" font-size="16" font-family="Segoe UI, sans-serif">Sensor-count (E2E to Influx)</text>
-  <text x="550" y="30" font-size="16" font-family="Segoe UI, sans-serif">Client-count (single Thing)</text>
-  <rect x="50" y="50" width="400" height="300" fill="none" stroke="#ccc"/>
-  <rect x="550" y="50" width="400" height="300" fill="none" stroke="#ccc"/>
-  <polyline fill="none" stroke="#1f77b4" stroke-width="2" points="90.0,102.3 130.0,68.2 210.0,50.2 290.0,102.5 370.0,59.2 450.0,50.0" /><circle cx="90.0" cy="102.3" r="3" fill="#1f77b4" /><circle cx="130.0" cy="68.2" r="3" fill="#1f77b4" /><circle cx="210.0" cy="50.2" r="3" fill="#1f77b4" /><circle cx="290.0" cy="102.5" r="3" fill="#1f77b4" /><circle cx="370.0" cy="59.2" r="3" fill="#1f77b4" /><circle cx="450.0" cy="50.0" r="3" fill="#1f77b4" />
-  <polyline fill="none" stroke="#ff7f0e" stroke-width="2" points="570.0,138.7 650.0,105.2 750.0,107.9 850.0,50.0 950.0,150.4" /><circle cx="570.0" cy="138.7" r="3" fill="#ff7f0e" /><circle cx="650.0" cy="105.2" r="3" fill="#ff7f0e" /><circle cx="750.0" cy="107.9" r="3" fill="#ff7f0e" /><circle cx="850.0" cy="50.0" r="3" fill="#ff7f0e" /><circle cx="950.0" cy="150.4" r="3" fill="#ff7f0e" />
-  <text x="50" y="380" font-size="12" font-family="Segoe UI, sans-serif">x = concurrent sensors / clients; y = avg latency (s)</text>
+  <text x="50" y="28" font-size="15" font-family="Segoe UI, sans-serif">(a) Ditto PATCH RTT (ms) — paper-comparable</text>
+  <text x="550" y="28" font-size="15" font-family="Segoe UI, sans-serif">(a) Client-count Ditto RTT (ms)</text>
+  <rect x="50" y="40" width="400" height="280" fill="none" stroke="#ccc"/>
+  <rect x="550" y="40" width="400" height="280" fill="none" stroke="#ccc"/>
+  <polyline fill="none" stroke="#1f77b4" stroke-width="2" points="90.0,263.8 130.0,141.6 210.0,73.9 290.0,194.1 370.0,40.0 450.0,180.9" /><circle cx="90.0" cy="263.8" r="3" fill="#1f77b4" /><circle cx="130.0" cy="141.6" r="3" fill="#1f77b4" /><circle cx="210.0" cy="73.9" r="3" fill="#1f77b4" /><circle cx="290.0" cy="194.1" r="3" fill="#1f77b4" /><circle cx="370.0" cy="40.0" r="3" fill="#1f77b4" /><circle cx="450.0" cy="180.9" r="3" fill="#1f77b4" />
+  <polyline fill="none" stroke="#ff7f0e" stroke-width="2" points="570.0,257.9 650.0,247.1 750.0,135.3 850.0,99.4 950.0,40.0" /><circle cx="570.0" cy="257.9" r="3" fill="#ff7f0e" /><circle cx="650.0" cy="247.1" r="3" fill="#ff7f0e" /><circle cx="750.0" cy="135.3" r="3" fill="#ff7f0e" /><circle cx="850.0" cy="99.4" r="3" fill="#ff7f0e" /><circle cx="950.0" cy="40.0" r="3" fill="#ff7f0e" />
+  <text x="50" y="350" font-size="12" font-family="Segoe UI, sans-serif">y = avg Ditto HTTP RTT (ms)</text>
+
+  <text x="50" y="400" font-size="15" font-family="Segoe UI, sans-serif">(b) E2E to Influx (s) — includes Telegraf flush_interval</text>
+  <text x="550" y="400" font-size="15" font-family="Segoe UI, sans-serif">(b) Client-count E2E Influx (s)</text>
+  <rect x="50" y="420" width="400" height="280" fill="none" stroke="#ccc"/>
+  <rect x="550" y="420" width="400" height="280" fill="none" stroke="#ccc"/>
+  <polyline fill="none" stroke="#2ca02c" stroke-width="2" points="90.0,598.2 130.0,424.2 210.0,422.8 290.0,420.0 370.0,429.2 450.0,422.4" /><circle cx="90.0" cy="598.2" r="3" fill="#2ca02c" /><circle cx="130.0" cy="424.2" r="3" fill="#2ca02c" /><circle cx="210.0" cy="422.8" r="3" fill="#2ca02c" /><circle cx="290.0" cy="420.0" r="3" fill="#2ca02c" /><circle cx="370.0" cy="429.2" r="3" fill="#2ca02c" /><circle cx="450.0" cy="422.4" r="3" fill="#2ca02c" />
+  <polyline fill="none" stroke="#d62728" stroke-width="2" points="570.0,433.6 650.0,424.4 750.0,425.2 850.0,420.0 950.0,424.3" /><circle cx="570.0" cy="433.6" r="3" fill="#d62728" /><circle cx="650.0" cy="424.4" r="3" fill="#d62728" /><circle cx="750.0" cy="425.2" r="3" fill="#d62728" /><circle cx="850.0" cy="420.0" r="3" fill="#d62728" /><circle cx="950.0" cy="424.3" r="3" fill="#d62728" />
+  <text x="50" y="730" font-size="12" font-family="Segoe UI, sans-serif">y = avg PATCH→Influx visibility (s); flush_interval typically dominates</text>
 </svg>

@@ -1,10 +1,13 @@
 """
-Phase 9 — simplified scaling benchmark (paper Test 1 / Test 2 methodology).
+Phase 9 — scaling benchmark with SEPARATED metrics.
 
-Measures end-to-end latency: HTTP PATCH send -> point visible in InfluxDB
-via the real Ditto -> Mosquitto -> Telegraf path.
+Metric (a) ditto_rtt_s: time from PATCH send until Ditto HTTP response
+  (paper-comparable; not affected by Telegraf flush_interval).
 
-Plotting: prefers matplotlib; falls back to SVG if matplotlib DLLs are blocked.
+Metric (b) e2e_influx_s: time from PATCH send until point visible in InfluxDB
+  (includes Telegraf flush_interval batching floor, typically ~10s).
+
+Do not treat (b) as the platform's Ditto scalability ceiling.
 """
 from __future__ import annotations
 
@@ -28,7 +31,8 @@ RESULTS_PNG = ROOT / "notes" / "scaling_results.png"
 RESULTS_SVG = ROOT / "notes" / "scaling_results.svg"
 
 
-def patch_marker(node_id: str, marker: float) -> float:
+def patch_marker(node_id: str, marker: float) -> tuple[float, float]:
+    """Return (t_send, ditto_rtt_s)."""
     t_send = time.perf_counter()
     body = {
         "cpu_utilization": {"properties": {"value": marker}},
@@ -42,9 +46,10 @@ def patch_marker(node_id: str, marker: float) -> float:
         json=body,
         content_type="application/merge-patch+json",
     )
+    ditto_rtt = time.perf_counter() - t_send
     if r.status_code >= 400:
         raise RuntimeError(f"PATCH failed {node_id}: {r.status_code} {r.text[:200]}")
-    return t_send
+    return t_send, ditto_rtt
 
 
 def wait_influx(thing_id: str, marker: float, t_send: float, timeout: float = 45.0) -> float:
@@ -74,9 +79,24 @@ from(bucket: "{INFLUX_BUCKET}")
     raise TimeoutError(f"No Influx point for {thing_id} marker={marker}")
 
 
-def one_update(node_id: str, marker: float) -> float:
-    t_send = patch_marker(node_id, marker)
-    return wait_influx(node_id, marker, t_send)
+def one_update(node_id: str, marker: float) -> dict:
+    t_send, ditto_rtt = patch_marker(node_id, marker)
+    e2e = wait_influx(node_id, marker, t_send)
+    return {"ditto_rtt_s": ditto_rtt, "e2e_influx_s": e2e}
+
+
+def _summarize(samples: list[dict]) -> dict:
+    ditto = [s["ditto_rtt_s"] for s in samples]
+    e2e = [s["e2e_influx_s"] for s in samples]
+    return {
+        "avg_ditto_rtt_s": sum(ditto) / len(ditto),
+        "avg_e2e_influx_s": sum(e2e) / len(e2e),
+        # Keep legacy key as E2E for backward compatibility, clearly not Ditto RTT
+        "avg_latency_s": sum(e2e) / len(e2e),
+        "ditto_rtts": ditto,
+        "e2e_latencies": e2e,
+        "latencies": e2e,
+    }
 
 
 def sensor_count_test(counts=(1, 2, 4, 6, 8, 10)) -> list[dict]:
@@ -86,28 +106,33 @@ def sensor_count_test(counts=(1, 2, 4, 6, 8, 10)) -> list[dict]:
         marker = 1000.0 + n + (time.time() % 100) / 100.0
         print(f"Sensor-count test n={n} marker={marker:.4f}")
         t0 = time.perf_counter()
-        latencies = []
+        samples: list[dict] = []
         with ThreadPoolExecutor(max_workers=n) as pool:
             futs = {
                 pool.submit(one_update, nid, marker + i * 0.001): nid
                 for i, nid in enumerate(nodes)
             }
             for fut in as_completed(futs):
-                lat = fut.result()
-                latencies.append(lat)
-                print(f"  {futs[fut]} latency={lat:.3f}s")
+                sample = fut.result()
+                samples.append(sample)
+                print(
+                    f"  {futs[fut]} ditto_rtt={sample['ditto_rtt_s']*1000:.1f}ms "
+                    f"e2e_influx={sample['e2e_influx_s']:.3f}s"
+                )
         wall = time.perf_counter() - t0
-        avg = sum(latencies) / len(latencies)
+        summary = _summarize(samples)
         results.append(
             {
                 "test": "sensor_count",
                 "n": n,
-                "avg_latency_s": avg,
                 "wall_s": wall,
-                "latencies": latencies,
+                **summary,
             }
         )
-        print(f"  avg={avg:.3f}s wall={wall:.3f}s")
+        print(
+            f"  avg_ditto_rtt={summary['avg_ditto_rtt_s']*1000:.1f}ms "
+            f"avg_e2e={summary['avg_e2e_influx_s']:.3f}s wall={wall:.3f}s"
+        )
     return results
 
 
@@ -117,14 +142,14 @@ def client_count_test(counts=(1, 5, 10, 15, 20)) -> list[dict]:
     for n in counts:
         base = 2000.0 + n + (time.time() % 50)
         print(f"Client-count test clients={n} target={target}")
-        latencies = []
+        samples: list[dict] = []
         lock = threading.Lock()
 
         def worker(i: int):
             marker = base + i * 0.01
-            lat = one_update(target, marker)
+            sample = one_update(target, marker)
             with lock:
-                latencies.append(lat)
+                samples.append(sample)
 
         t0 = time.perf_counter()
         threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
@@ -133,17 +158,26 @@ def client_count_test(counts=(1, 5, 10, 15, 20)) -> list[dict]:
         for t in threads:
             t.join()
         wall = time.perf_counter() - t0
-        avg = sum(latencies) / len(latencies) if latencies else float("nan")
+        summary = _summarize(samples) if samples else {
+            "avg_ditto_rtt_s": float("nan"),
+            "avg_e2e_influx_s": float("nan"),
+            "avg_latency_s": float("nan"),
+            "ditto_rtts": [],
+            "e2e_latencies": [],
+            "latencies": [],
+        }
         results.append(
             {
                 "test": "client_count",
                 "n": n,
-                "avg_latency_s": avg,
                 "wall_s": wall,
-                "latencies": latencies,
+                **summary,
             }
         )
-        print(f"  avg={avg:.3f}s wall={wall:.3f}s")
+        print(
+            f"  avg_ditto_rtt={summary['avg_ditto_rtt_s']*1000:.1f}ms "
+            f"avg_e2e={summary['avg_e2e_influx_s']:.3f}s wall={wall:.3f}s"
+        )
     return results
 
 
@@ -155,7 +189,7 @@ def plot_svg(results: list[dict]) -> None:
         if not xs:
             return ""
         max_x = max(xs) or 1
-        max_y = max(ys + [1.0]) or 1
+        max_y = max(ys + [0.001]) or 1
         pts = []
         for x, y in zip(xs, ys):
             px = x0 + (x / max_x) * w
@@ -170,71 +204,77 @@ def plot_svg(results: list[dict]) -> None:
             )
         )
 
+    # Two rows: (a) Ditto RTT ms, (b) E2E Influx s
     sx = [r["n"] for r in sensor]
-    sy = [r["avg_latency_s"] for r in sensor]
+    sy_a = [r["avg_ditto_rtt_s"] * 1000 for r in sensor]
+    sy_b = [r["avg_e2e_influx_s"] for r in sensor]
     cx = [r["n"] for r in client]
-    cy = [r["avg_latency_s"] for r in client]
+    cy_a = [r["avg_ditto_rtt_s"] * 1000 for r in client]
+    cy_b = [r["avg_e2e_influx_s"] for r in client]
     svg = f"""<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="420">
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="840">
   <rect width="100%" height="100%" fill="#fff"/>
-  <text x="50" y="30" font-size="16" font-family="Segoe UI, sans-serif">Sensor-count (E2E to Influx)</text>
-  <text x="550" y="30" font-size="16" font-family="Segoe UI, sans-serif">Client-count (single Thing)</text>
-  <rect x="50" y="50" width="400" height="300" fill="none" stroke="#ccc"/>
-  <rect x="550" y="50" width="400" height="300" fill="none" stroke="#ccc"/>
-  {series_polyline(sx, sy, 50, 50, 400, 300, "#1f77b4")}
-  {series_polyline(cx, cy, 550, 50, 400, 300, "#ff7f0e")}
-  <text x="50" y="380" font-size="12" font-family="Segoe UI, sans-serif">x = concurrent sensors / clients; y = avg latency (s)</text>
+  <text x="50" y="28" font-size="15" font-family="Segoe UI, sans-serif">(a) Ditto PATCH RTT (ms) — paper-comparable</text>
+  <text x="550" y="28" font-size="15" font-family="Segoe UI, sans-serif">(a) Client-count Ditto RTT (ms)</text>
+  <rect x="50" y="40" width="400" height="280" fill="none" stroke="#ccc"/>
+  <rect x="550" y="40" width="400" height="280" fill="none" stroke="#ccc"/>
+  {series_polyline(sx, sy_a, 50, 40, 400, 280, "#1f77b4")}
+  {series_polyline(cx, cy_a, 550, 40, 400, 280, "#ff7f0e")}
+  <text x="50" y="350" font-size="12" font-family="Segoe UI, sans-serif">y = avg Ditto HTTP RTT (ms)</text>
+
+  <text x="50" y="400" font-size="15" font-family="Segoe UI, sans-serif">(b) E2E to Influx (s) — includes Telegraf flush_interval</text>
+  <text x="550" y="400" font-size="15" font-family="Segoe UI, sans-serif">(b) Client-count E2E Influx (s)</text>
+  <rect x="50" y="420" width="400" height="280" fill="none" stroke="#ccc"/>
+  <rect x="550" y="420" width="400" height="280" fill="none" stroke="#ccc"/>
+  {series_polyline(sx, sy_b, 50, 420, 400, 280, "#2ca02c")}
+  {series_polyline(cx, cy_b, 550, 420, 400, 280, "#d62728")}
+  <text x="50" y="730" font-size="12" font-family="Segoe UI, sans-serif">y = avg PATCH→Influx visibility (s); flush_interval typically dominates</text>
 </svg>
 """
     RESULTS_SVG.write_text(svg, encoding="utf-8")
     print(f"Wrote {RESULTS_SVG}")
 
-    # Also write a minimal PNG-compatible note file if matplotlib blocked:
-    # copy SVG bytes referenced as the chart artifact; create a tiny placeholder PNG
-    # only if matplotlib works.
     try:
         import matplotlib.pyplot as plt
 
-        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-        axes[0].plot(sx, sy, marker="o")
-        axes[0].set_title("Sensor-count test (E2E to Influx)")
-        axes[0].set_xlabel("Concurrent node updates")
-        axes[0].set_ylabel("Avg latency (s)")
-        axes[0].grid(True, alpha=0.3)
-        axes[1].plot(cx, cy, marker="o", color="C1")
-        axes[1].set_title("Client-count test (single Thing)")
-        axes[1].set_xlabel("Concurrent clients")
-        axes[1].set_ylabel("Avg latency (s)")
-        axes[1].axhline(1.0, color="red", linestyle="--", alpha=0.5, label="1s (paper)")
-        axes[1].legend()
-        axes[1].grid(True, alpha=0.3)
+        fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+        axes[0, 0].plot(sx, sy_a, marker="o")
+        axes[0, 0].set_title("(a) Sensor-count Ditto RTT")
+        axes[0, 0].set_ylabel("Avg RTT (ms)")
+        axes[0, 0].grid(True, alpha=0.3)
+        axes[0, 1].plot(cx, cy_a, marker="o", color="C1")
+        axes[0, 1].set_title("(a) Client-count Ditto RTT")
+        axes[0, 1].set_ylabel("Avg RTT (ms)")
+        axes[0, 1].axhline(1000.0, color="red", linestyle="--", alpha=0.5, label="1s paper")
+        axes[0, 1].legend()
+        axes[0, 1].grid(True, alpha=0.3)
+        axes[1, 0].plot(sx, sy_b, marker="o", color="C2")
+        axes[1, 0].set_title("(b) Sensor-count E2E Influx")
+        axes[1, 0].set_xlabel("Concurrent nodes")
+        axes[1, 0].set_ylabel("Avg latency (s)")
+        axes[1, 0].grid(True, alpha=0.3)
+        axes[1, 1].plot(cx, cy_b, marker="o", color="C3")
+        axes[1, 1].set_title("(b) Client-count E2E Influx")
+        axes[1, 1].set_xlabel("Concurrent clients")
+        axes[1, 1].set_ylabel("Avg latency (s)")
+        axes[1, 1].grid(True, alpha=0.3)
         fig.tight_layout()
         fig.savefig(RESULTS_PNG, dpi=140)
         print(f"Wrote {RESULTS_PNG}")
     except Exception as e:
         print(f"matplotlib unavailable ({e}); using SVG as chart artifact")
-        # Duplicate SVG path as the required .png name is awkward; write a
-        # same-content sibling and also copy SVG bytes into .png extension note.
-        # Prefer committing SVG; also emit a simple PPM renamed is wrong.
-        # Create PNG via pure-Python uncompressed PPM wrapped — skip; keep SVG.
-        RESULTS_PNG.write_bytes(
-            RESULTS_SVG.read_bytes()
-        )  # portable chart; open with browser if needed
+        RESULTS_PNG.write_bytes(RESULTS_SVG.read_bytes())
         print(f"Also wrote chart bytes to {RESULTS_PNG} (SVG content; matplotlib blocked)")
 
 
 def main() -> None:
-    print("Running scaling benchmarks (this takes several minutes)...")
+    print("Running dual-metric scaling benchmarks...")
+    print("  (a) ditto_rtt_s = PATCH -> Ditto HTTP response")
+    print("  (b) e2e_influx_s = PATCH -> visible in Influx (Telegraf flush-bounded)")
     results = sensor_count_test() + client_count_test()
     RESULTS_JSON.write_text(json.dumps(results, indent=2), encoding="utf-8")
     plot_svg(results)
-    print("\nHonest comparison notes:")
-    print("- Paper: latency grows roughly linearly with sensor count;")
-    print("  latency exceeds ~1s past 20 concurrent clients on one Thing.")
-    print("- This local minikube PoC uses direct HTTP inbound (no Hono/Kafka) but")
-    print("  measures true outbound path Ditto->MQTT->Telegraf->Influx.")
-    print("- Absolute numbers will differ (single-node k8s, port-forwards, small cluster).")
-    print("- Directional trends (growth with concurrency) are what to defend.")
+    print(f"Wrote {RESULTS_JSON}")
 
 
 if __name__ == "__main__":

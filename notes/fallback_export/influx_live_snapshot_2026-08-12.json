@@ -1,0 +1,125 @@
+{
+  "exported_at": "2026-08-12T16:54:00Z",
+  "note": "Fallback snapshot for demo if live cluster/Grafana is unavailable. Generated from a real, running pipeline this session.",
+  "per_node_cpu_pct": [
+    {
+      "thingId": "hnguyen.clustertwin:node_0",
+      "value": 95.0,
+      "time": "2026-08-12 16:53:44.820906+00:00"
+    },
+    {
+      "thingId": "hnguyen.clustertwin:node_1",
+      "value": 34.47,
+      "time": "2026-08-12 16:53:45.046009+00:00"
+    },
+    {
+      "thingId": "hnguyen.clustertwin:node_2",
+      "value": 29.12,
+      "time": "2026-08-12 16:53:45.176374+00:00"
+    },
+    {
+      "thingId": "hnguyen.clustertwin:node_3",
+      "value": 29.06,
+      "time": "2026-08-12 16:53:45.309216+00:00"
+    },
+    {
+      "thingId": "hnguyen.clustertwin:node_4",
+      "value": 43.9,
+      "time": "2026-08-12 16:53:45.433436+00:00"
+    },
+    {
+      "thingId": "hnguyen.clustertwin:node_5",
+      "value": 52.36,
+      "time": "2026-08-12 16:53:45.576074+00:00"
+    },
+    {
+      "thingId": "hnguyen.clustertwin:node_6",
+      "value": 17.01,
+      "time": "2026-08-12 16:53:45.713375+00:00"
+    },
+    {
+      "thingId": "hnguyen.clustertwin:node_7",
+      "value": 49.43,
+      "time": "2026-08-12 16:53:45.830646+00:00"
+    },
+    {
+      "thingId": "hnguyen.clustertwin:node_8",
+      "value": 21.26,
+      "time": "2026-08-12 16:53:41.512338+00:00"
+    },
+    {
+      "thingId": "hnguyen.clustertwin:node_9",
+      "value": 35.05,
+      "time": "2026-08-12 16:53:41.652353+00:00"
+    }
+  ],
+  "per_node_latency_ms": [
+    {
+      "thingId": "hnguyen.clustertwin:node_0",
+      "value": 120.0,
+      "time": "2026-08-12 16:53:44.820906+00:00"
+    },
+    {
+      "thingId": "hnguyen.clustertwin:node_1",
+      "value": 8.15,
+      "time": "2026-08-12 16:53:45.046009+00:00"
+    },
+    {
+      "thingId": "hnguyen.clustertwin:node_2",
+      "value": 27.23,
+      "time": "2026-08-12 16:53:45.176374+00:00"
+    },
+    {
+      "thingId": "hnguyen.clustertwin:node_3",
+      "value": 14.47,
+      "time": "2026-08-12 16:53:45.309216+00:00"
+    },
+    {
+      "thingId": "hnguyen.clustertwin:node_4",
+      "value": 15.22,
+      "time": "2026-08-12 16:53:45.433436+00:00"
+    },
+    {
+      "thingId": "hnguyen.clustertwin:node_5",
+      "value": 3.76,
+      "time": "2026-08-12 16:53:45.576074+00:00"
+    },
+    {
+      "thingId": "hnguyen.clustertwin:node_6",
+      "value": 14.97,
+      "time": "2026-08-12 16:53:45.713375+00:00"
+    },
+    {
+      "thingId": "hnguyen.clustertwin:node_7",
+      "value": 35.68,
+      "time": "2026-08-12 16:53:45.830646+00:00"
+    },
+    {
+      "thingId": "hnguyen.clustertwin:node_8",
+      "value": 17.44,
+      "time": "2026-08-12 16:53:41.512338+00:00"
+    },
+    {
+      "thingId": "hnguyen.clustertwin:node_9",
+      "value": 15.84,
+      "time": "2026-08-12 16:53:41.652353+00:00"
+    }
+  ],
+  "rack_and_cluster_avg_cpu_pct": [
+    {
+      "thingId": "hnguyen.clustertwin:main_cluster",
+      "value": 43.4,
+      "time": "2026-08-12 16:53:39.897751+00:00"
+    },
+    {
+      "thingId": "hnguyen.clustertwin:rack_0",
+      "value": 51.13,
+      "time": "2026-08-12 16:53:37.428510+00:00"
+    },
+    {
+      "thingId": "hnguyen.clustertwin:rack_1",
+      "value": 35.67,
+      "time": "2026-08-12 16:53:38.983444+00:00"
+    }
+  ]
+}
