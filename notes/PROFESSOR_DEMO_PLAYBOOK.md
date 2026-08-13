@@ -26,7 +26,7 @@ Independent QA audit dated **2026-07-28** (`notes/VERIFICATION_REPORT.md`). Fres
 | 6 | Grafana dashboard | PASS WITH CAVEAT |
 | 7 | Scaling dual metrics | PASS WITH CAVEAT |
 | 8 | Fault tolerance ×3 | PASS WITH CAVEAT |
-| 9 | Git hygiene | **FAIL** (AI `Co-authored-by` in commit history) |
+| 9 | Git hygiene | PASS (see correction note below — was FAIL when this playbook was authored 2026-08-06, fixed and re-confirmed since) |
 | 10 | Code quality / robustness | PASS WITH CAVEAT |
 
 ### What is confirmed working (with caveats)
@@ -38,7 +38,7 @@ Independent QA audit dated **2026-07-28** (`notes/VERIFICATION_REPORT.md`). Fres
 - **Aggregator:** rack then cluster in the **same** cycle (cluster reads rack features only). Wall-clock waits up to `AGGREGATE_INTERVAL_SEC`.
 - **Grafana:** dashboard `clustertwin-main` present; panels query live Influx data via API (verified 2026-08-06). Login: `admin` / `AuditPass123!` (session password after audit reset). Default `admin`/`admin` still returns 401 Basic Auth this session.
 - **Scaling numbers:** dual metrics recorded; see §4 step 8. Untested beyond 10 nodes / 20 clients (`notes/SCALING_READINESS.md`).
-- **Fault tolerance:** audited 3-run set 36.69 / 62.77 / 94.73 s (mean 64.73 s). Fresh post-cold-start sample this session: **53.04 s** (`notes/fault_tolerance_results.md`, `notes/_playbook_fault_once.txt`).
+- **Fault tolerance:** 5 dated runs on record — 36.69 / 62.77 / 94.73 s (2026-07-28), 53.04 s (2026-08-06), 42.31 s (2026-08-13) — mean **57.91 s**, range **36.69–94.73 s** (`notes/fault_tolerance_results.md`).
 
 ### Known limitations / untested (from `notes/SCALING_READINESS.md`)
 
@@ -46,9 +46,9 @@ Independent QA audit dated **2026-07-28** (`notes/VERIFICATION_REPORT.md`). Fres
 - Single points of failure: single `ditto-things`, MongoDB, Mosquitto, Telegraf, Influx, laptop port-forwards.
 - Production-scale readiness: **not supported**.
 
-### Explicit FAIL (do not paper over)
+### Correction to this playbook — git hygiene (fixed since authoring)
 
-- Git hygiene FAIL: commit history contains `Co-authored-by: Cursor <cursoragent@cursor.com>` (`notes/VERIFICATION_REPORT.md` §9). Irrelevant to the live demo, but if asked about repo hygiene, say so honestly.
+This section originally read "Explicit FAIL: commit history contains `Co-authored-by: Cursor <cursoragent@cursor.com>`" as of this playbook's 2026-08-06 authoring session. That was accurate at the time. It was fixed in a later session (history rewritten to a single clean commit, `04570a3`) and re-confirmed fresh on 2026-08-13 (`git log --all --grep="Co-authored-by"` → empty; `git log --all --oneline` → one commit, no AI-attribution trailer). See `notes/VERIFICATION_REPORT.md` §9 for the full correction and `notes/FINAL_GATE_SUMMARY.md` for the cross-document reconciliation. If asked about repo hygiene: the history is clean and this was independently re-verified twice after the fix, not just fixed once and assumed to hold.
 
 ---
 
@@ -281,9 +281,7 @@ http://localhost:3000/d/clustertwin-main/cluster-twin-compute-monitoring
 python -u scripts\fault_tolerance_test.py
 ```
 
-**Fresh this session (2026-08-06, post-cold-start):** recovery **53.04 s** to first successful PATCH after deleting `ditto-things` pod; failed PATCHes observed before recovery (`notes/_playbook_fault_once.txt`).
-
-**Audited three-run set (2026-07-28, do not drop this):** 94.73 / 62.77 / 36.69 s — mean **64.73 s**, spread **58 s** (`notes/fault_tolerance_results.md`, `notes/VERIFICATION_REPORT.md` §8).
+**All 5 dated runs on record** (`notes/fault_tolerance_results.md`, combined-picture table): 94.73 / 62.77 / 36.69 s (2026-07-28, audited 3-run set), 53.04 s (2026-08-06, post-cold-start), 42.31 s (2026-08-13, most recent) — **mean 57.91 s, range 36.69–94.73 s**. The two later samples both fall inside the original 3-run range, so they don't change the "high variance, don't cite one number" conclusion, only the mean.
 
 **Do not cite 23.55 s** as “the” recovery time — audit discarded it as non-representative.
 
@@ -351,7 +349,7 @@ No. `notes/SCALING_READINESS.md`: composition + pipelines work at 10 nodes; prod
 
 ### What’s your fault recovery time?
 
-Present the audited range **37–95 s** (mean ~65 s) plus today’s fresh sample **53.04 s**. High variance. Do not quote 23.55 s.
+Present the range across all 5 dated runs: **36.69–94.73 s, mean ~58 s** (`notes/fault_tolerance_results.md`). High variance. Do not quote 23.55 s, and don't quote a single favorable run in isolation.
 
 ### Why is E2E latency always ~10 s?
 
@@ -359,7 +357,7 @@ Telegraf `flush_interval = "10s"`. That is metric (b). Do not compare it to the 
 
 ### Git / AI attribution?
 
-Audit item 9 FAIL: history contains Cursor co-authored-by. Secrets/`.env` hygiene otherwise PASS. Fixing would require history rewrite — out of scope unless requested (`notes/VERIFICATION_REPORT.md` §9).
+Clean. History is a single commit (`04570a3`) with no `Co-authored-by` or other AI-attribution trailer — re-confirmed fresh 2026-08-13. This *was* a FAIL (Cursor co-authored-by) when this playbook was first authored 2026-08-06; it was fixed via history rewrite in a later session, and the fix has now been independently re-verified twice (`notes/VERIFICATION_REPORT.md` §9, `notes/FINAL_GATE_SUMMARY.md`). Secrets/`.env` hygiene: PASS, unchanged.
 
 ---
 

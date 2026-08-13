@@ -219,9 +219,9 @@ Prior report’s single ~9–12 s “latency” was **metric (b)** (Telegraf flu
 
 ## 8. Fault tolerance
 
-**Status: PASS WITH CAVEAT**
+**Status: PASS WITH CAVEAT** (updated 2026-08-13 — two more runs were added in later sessions; see below)
 
-### Fresh 3 runs (prior 23.55 s discarded)
+### Fresh 3 runs, this session (prior 23.55 s discarded)
 
 | Run | Recovery (s) |
 |----:|-------------:|
@@ -231,6 +231,10 @@ Prior report’s single ~9–12 s “latency” was **metric (b)** (Telegraf flu
 
 - Mean **64.73 s**, spread **58.04 s** — **high variance**.
 - Fresh evidence **contradicts** presenting 23.55 s as “the” recovery time.
+
+### Update to this section — 2 more runs since (2026-08-13)
+
+This section's original 2026-07-28 evidence above (3 runs, mean 64.73 s) is unchanged and still valid — it's what this audit session actually measured. Two more dated runs were added in later sessions: **53.04 s** (2026-08-06) and **42.31 s** (2026-08-13). Both fall inside the original 36.69–94.73 s range, so the **high-variance / don't-cite-one-number** conclusion is unaffected — but the **mean** across all 5 runs is **57.91 s**, not 64.73 s. Cite the 5-run figure (`notes/fault_tolerance_results.md`, "Combined picture across all 5 known runs") as current; treat 64.73 s as this section's own point-in-time number, superseded by more data, not wrong for what it was.
 
 See `notes/fault_tolerance_results.md`.
 
@@ -285,7 +289,7 @@ Error handling is crash-oriented, not resilient. Document as PoC limitation.
 | 5 | Aggregator | PASS WITH CAVEAT |
 | 6 | Grafana dashboard | PASS WITH CAVEAT |
 | 7 | Scaling dual metrics | PASS WITH CAVEAT |
-| 8 | Fault tolerance ×3 | PASS WITH CAVEAT |
+| 8 | Fault tolerance ×5 (updated 2026-08-13; was ×3) | PASS WITH CAVEAT |
 | 9 | Git hygiene | PASS (fixed in a later session; this row corrected 2026-08-12) |
 | 10 | Code quality | PASS WITH CAVEAT |
 

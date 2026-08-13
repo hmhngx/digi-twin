@@ -4,6 +4,8 @@
 
 Audit session: 2026-07-28. Numbers from fresh dual-metric Phase 9 / Phase 10 runs only.
 
+**Update, 2026-08-13:** the fault-recovery figures below (3-run set, mean 64.73 s) are this session's original evidence and are still valid as far as they go, but two more dated runs have been added since (53.04 s on 2026-08-06, 42.31 s on 2026-08-13). Both fall inside the original 36.69–94.73 s range, so nothing here about variance or "don't cite one number" changes — but the current mean across all 5 runs is **57.91 s**, not 64.73 s. See `notes/fault_tolerance_results.md` for the combined picture.
+
 ---
 
 ## What has been tested
@@ -15,7 +17,7 @@ Audit session: 2026-07-28. Numbers from fresh dual-metric Phase 9 / Phase 10 run
 | Client-count concurrency | **1, 5, 10, 15, 20** concurrent clients on **one** Thing (`node_0`) |
 | Metric (a) Ditto RTT | Measured; grows from ~0.6 s (1 sensor) to ~4.0 s (10 sensors); client-count avg ~1–5 s, with **503 ask.error** at 20 clients |
 | Metric (b) E2E Influx | Measured; ~9–11 s, dominated by Telegraf `flush_interval=10s` |
-| Fault recovery | **3** fresh `ditto-things` pod kills: **94.73, 62.77, 36.69 s** (mean 64.73 s, spread 58 s) |
+| Fault recovery | **3** fresh `ditto-things` pod kills this session: **94.73, 62.77, 36.69 s** (mean 64.73 s, spread 58 s). Now **5** total across later sessions — mean **57.91 s**, same 36.69–94.73 s range (`notes/fault_tolerance_results.md`) |
 | Pipeline | Single publisher process → Ditto HTTP → MQTT → Telegraf → Influx → Grafana |
 
 ---
@@ -78,6 +80,6 @@ Paper Test 1.2: latency exceeding ~1 s past ~20 concurrent clients on a single T
 | Grafana can show live hierarchy data | Supported (API Basic Auth; form login broken) |
 | Comparable to paper sub-second/latency curves via E2E Influx times | **Rejected** — those were flush artifacts |
 | Ready to scale to production device counts | **Not supported** — untested beyond 10/20; SPOFs; HTTP inbound PoC |
-| Single recovery-time number (e.g. 23.55 s) | **Rejected** — 3-run spread 37–95 s |
+| Single recovery-time number (e.g. 23.55 s) | **Rejected** — 5-run spread 37–95 s (mean 57.91 s) |
 
 Known: 10-node PoC works when the cluster is up. Unknown: everything beyond that matrix.
