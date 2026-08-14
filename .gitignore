@@ -11,3 +11,5 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 notes/_*
+notes/MEETING_LINKS.md
+notes/MEETING_SCRIPT_FINAL.md
