@@ -1,9 +1,8 @@
-# Cluster Twin (OpenTwins PoC)
+# `twin/` package
 
-Simulated compute-cluster digital twin on an already-deployed OpenTwins stack
-(Eclipse Ditto, Extended API, Mosquitto, Telegraf, InfluxDB, Grafana).
+Python processes for the cluster twin. **How to start Minikube, port-forwards, and Grafana:** see the repo-root [README.md](../README.md). **Type/instance model and aggregation rules:** [notes/twin_design_spec.md](../notes/twin_design_spec.md).
 
-Three-level compositional hierarchy (not a flattened name-prefix group):
+Namespace `hnguyen.clustertwin` (overridable via `.env`). Shared settings: [config.py](config.py). HTTP: [ditto_client.py](ditto_client.py) (`ditto:ditto`).
 
 ```
 hnguyen.clustertwin:main_cluster
@@ -11,107 +10,51 @@ hnguyen.clustertwin:main_cluster
   └── rack_1 → node_5 … node_9
 ```
 
-Twin Types: `NodeType`, `RackType` (cardinality 5), `ClusterType` (cardinality 2).
+Types: `NodeType`, `RackType` (cardinality 5), `ClusterType` (cardinality 2).
 
-## Design summary
+## Processes
 
-See [notes/twin_design_spec.md](notes/twin_design_spec.md) for attributes vs features,
-type vs instance composition, aggregation rules (healthy CPU threshold = 80%),
-and the verified Ditto→MQTT→Telegraf→Influx connection.
+Run from the repo root, venv activated, `.env` loaded. **Three terminals** — `publisher.py` never exits.
 
-**Update path you must be able to explain from memory:**
-
-1. `publisher.py` PATCH → Ditto Things API (`ditto:ditto`)
-2. Ditto target connection publishes Thing events to `opentwins/hnguyen.clustertwin/<name>`
-3. Telegraf (`json_v2` on `opentwins/#`) → InfluxDB (`org=opentwins`, `bucket=default`)
-4. `aggregator.py` recomputes rack features from child nodes, then cluster features
-   from the **two rack twins only** (never skips the rack level)
-
-## Prerequisites
-
-- Minikube with OpenTwins Helm release already running
-- `kubectl` context pointing at that cluster
-- Python 3.11+ on Windows
-- Port-forwards (see below)
-
-## Cold start reproduce (Windows)
+| Script | Default interval | What it does |
+|---|---|---|
+| [publisher.py](publisher.py) | 3 s | PATCH node features on Ditto HTTP. No MQTT inbound. |
+| [aggregator.py](aggregator.py) | 7 s | PATCH rack features from child nodes, then cluster features from **the two rack twins only**. Healthy = CPU &lt; 80. |
+| [failure_detector.py](failure_detector.py) | poll ~2 s, fail after 9 s | Logs `FAILED` / `CLEARED`. Does **not** PATCH Ditto. Hold-last-value is the publisher skipping paused IDs. |
 
 ```powershell
-minikube start
-# wait until OpenTwins pods are Ready
-kubectl get pods
-
-cd "C:\Users\minhh\Side Hustles\digi-twin"
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-copy .env.example .env
-# Set INFLUX_TOKEN from the live Telegraf ConfigMap token field:
-#   kubectl get configmap opentwins-telegraf-real-config -o yaml
-
-.\scripts\port-forwards.ps1
-# keep forwards alive; in a new terminal:
-
-python scripts\setup_types_and_twins.py
-python scripts\phase5_mqtt_influx.py create-connection
-
-# three processes (three terminals)
-python twin\publisher.py
-python twin\failure_detector.py
-python twin\aggregator.py
+python -u twin\publisher.py
+python -u twin\aggregator.py
+python -u twin\failure_detector.py
 ```
 
-Grafana: http://localhost:3000 — import [grafana/dashboard.json](grafana/dashboard.json).
-If the Influx datasource UID is not `opentwins`, use Grafana's import dialog to
-remap the datasource to the provisioned OpenTwins InfluxDB source.
-
-Optional checks:
+Finite runs:
 
 ```powershell
-python scripts\phase5_mqtt_influx.py manual-test
-python notes\scaling_benchmark.py
-python scripts\fault_tolerance_test.py
+python -u twin\publisher.py --cycles 3
+python -u twin\aggregator.py --cycles 2
+python -u twin\failure_detector.py --duration 20
 ```
 
-## Credentials
+## Publisher details
 
-- Ditto HTTP / Extended API: `ditto:ditto` (subject `nginx:ditto`)
-- Do **not** use `devops:foobar` against per-Thing policies
-- Connection management (`POST /api/2/connections`) uses `devops:foobar` (Connectivity API)
+- Honors `notes/_paused_nodes.json` (skip those Thing IDs).
+- `node_0` ramps CPU ~10% → ~95% and latency ~5 → ~120 ms over ~360 s. Other nodes are random in-range noise.
+- 2026-08-25: `--cycles 3` → 30× HTTP 204.
 
-## Out of Scope
+## Failure detector CLI
 
-1. **Simplified inbound ingestion path (by deployment necessity, not by design choice):**
-   The paper routes inbound telemetry through Eclipse Hono → Kafka. This deployment
-   has no Hono and no Kafka; the publisher uses direct Ditto HTTP PATCH.
-   Outbound event export to Grafana uses the platform's real MQTT/Telegraf plumbing,
-   not a workaround.
+```powershell
+python twin\failure_detector.py --pause node_1
+python twin\failure_detector.py --resume node_1
+```
 
-   Defense wording: "My deployment's inbound ingestion is simplified — direct HTTP
-   to Ditto rather than the paper's Hono→Kafka pipeline. The outbound event export
-   to Grafana, however, uses the platform's real MQTT/Telegraf plumbing, not a
-   workaround."
+Short names get prefix `hnguyen.clustertwin:`. Pause/resume only write the JSON file; start publisher + detector separately to observe `FAILED` / `CLEARED`.
 
-2. **3D/Unity visualization** — Unity model, WebGL export, Grafana Unity panel.
-   Scoped out for time / skill focus.
+State dump: `notes/_failure_state.json` (gitignored).
 
-3. **Full Kafka-ML production ML pipeline** — Hono→Kafka-ML→Ditto, RabbitMQ/AMQP
-   bridge, MongoDB topic/device mappings. Phase 6 failure detector is a simplified
-   hold-last-value stand-in, not the paper's predictive ML lifecycle.
+If publisher is stopped, the detector will `FAILED` every node after the tolerance window. That is expected.
 
-If asked why these are missing: time allocation and deployment constraints for a
-pre-semester proof-of-concept — not lack of understanding. The design spec states
-exactly what the real version would require.
+## Out of scope (same as root README)
 
-## Repo layout
-
-| Path | Role |
-|------|------|
-| `twin/publisher.py` | Inbound telemetry (HTTP PATCH) |
-| `twin/failure_detector.py` | Simplified failure detection |
-| `twin/aggregator.py` | Recursive rack→cluster aggregation |
-| `scripts/setup_types_and_twins.py` | Phases 2–3 |
-| `scripts/phase5_mqtt_influx.py` | Outbound connection + MQTT test |
-| `scripts/fault_tolerance_test.py` | Pod-kill recovery timing |
-| `notes/scaling_benchmark.py` | Paper-style scaling tests |
-| `grafana/dashboard.json` | Portable dashboard |
+Direct HTTP inbound instead of Hono→Kafka. Hold-last-value instead of Kafka-ML. No Unity panel. Connectivity API `devops:foobar` is **not** used by these three processes (MQTT connection setup is [scripts/phase5_mqtt_influx.py](../scripts/phase5_mqtt_influx.py)).
