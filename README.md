@@ -50,7 +50,7 @@ Three counts people mix up:
 
 Docker Desktop runs **one** container named `minikube`. OpenTwins pods run **inside** that Kubernetes cluster. Your laptop reaches them only through port-forwards.
 
-**`docker ps` showing `minikube Up` is not sufficient.** After a Docker bounce the VM can look Running while kubelet/apiserver are Stopped and kubeconfig still points at the **previous** API port. 2026-08-25 before recovery: host Running, kubelet Stopped, apiserver Stopped, kubeconfig wanted `127.0.0.1:52626` but kubectl used `127.0.0.1:60023`. Fix: `minikube start` then `minikube update-context`. Confirm `minikube status` shows kubelet **Running**, apiserver **Running**, kubeconfig **Configured**.
+**`docker ps` showing `minikube Up` is not sufficient.** After a Docker bounce the VM can look Running while kubelet/apiserver are Stopped and kubeconfig still points at the **previous** API port. 2026-08-25 before recovery: host Running, kubelet Stopped, apiserver Stopped, kubeconfig wanted `127.0.0.1:52626` but kubectl used `127.0.0.1:60023`. Fix: `minikube start` then `minikube update-context`. Confirm `minikube status` shows kubelet **Running**, apiserver **Running**, kubeconfig **Configured**. **Why this keeps happening, root-caused 2026-09-16:** the `minikube` container's ports were created with dynamic (unpinned) host bindings, so Docker hands it a genuinely new random host port for 8443 every time it restarts — and it does restart, because Docker Desktop doesn't auto-start on login. Not a bug, and not worth "fixing" by recreating the cluster (would throw away all provisioned state for a 30-second problem) — see [notes/KUBECONFIG_DRIFT_AUDIT.md](notes/KUBECONFIG_DRIFT_AUDIT.md) for the full evidence trail.
 
 ```mermaid
 flowchart LR
@@ -184,6 +184,7 @@ Host-side MQTT for the **manual** Telegraf test is `localhost:1883`. That is a d
 | [twin/README.md](twin/README.md) | Package-level CLI notes (this file is the operator/architecture doc) |
 | [scripts/setup_types_and_twins.py](scripts/setup_types_and_twins.py) | Create types, instances, links |
 | [scripts/phase5_mqtt_influx.py](scripts/phase5_mqtt_influx.py) | `create-connection` / `status` / `manual-test` / `query` |
+| [scripts/cluster-preflight.ps1](scripts/cluster-preflight.ps1) | Run before port-forwards.ps1: checks minikube status, recovers only if actually needed, waits for pods |
 | [scripts/port-forwards.ps1](scripts/port-forwards.ps1) | Five `kubectl port-forward`s |
 | [scripts/fault_tolerance_test.py](scripts/fault_tolerance_test.py) | **Destructive:** kills a Ditto pod. Dated results only. |
 | [notes/scaling_benchmark.py](notes/scaling_benchmark.py) | Dual-metric lab bench. **Overwrites** `notes/scaling_results.json`. |
@@ -229,6 +230,14 @@ cd "C:\Users\minhh\Side Hustles\digi-twin"
 ```
 
 ### 1. Control plane
+
+```powershell
+.\scripts\cluster-preflight.ps1
+```
+
+Automates the sequence below: checks `minikube status` first and only runs `minikube start` + `minikube update-context` if something's actually Stopped/Misconfigured (see [notes/KUBECONFIG_DRIFT_AUDIT.md](notes/KUBECONFIG_DRIFT_AUDIT.md) for why this drift happens), then waits for all pods to be Ready before saying it's safe to proceed. **Tested 2026-09-16 both ways** — correctly skips the restart on an already-healthy cluster (confirmed running `minikube start` unconditionally is *not* a safe no-op: it knocked a fine cluster's pods back to not-Ready for several minutes when tried) and correctly recovers a genuinely drifted one.
+
+Equivalent manual steps, if you want to see each one:
 
 ```powershell
 docker ps
