@@ -157,21 +157,58 @@ topic `opentwins/hnguyen.clustertwin/node_0`, field
 
 ## Failure detection (Phase 6) vs paper Section 3.3
 
-**This build (verified):** per-node last-update timer (~3 s publish interval +
-9 s tolerance). Pause a node via `notes/_paused_nodes.json` (publisher skips it).
-On timeout the detector logs `FAILED` and holds last-known feature values
-unchanged. On resume it logs `CLEARED`.
-
+**Through 2026-09-14 (superseded, kept for history):** per-node last-update
+timer (~3 s publish interval + 9 s tolerance), exact-signature equality. On
+timeout the detector logged `FAILED` and held last-known feature values
+unchanged, passively (the publisher skipping paused IDs, not an active write).
 Verified run: paused `hnguyen.clustertwin:node_1` →
 `FAILED ... holding last-known values cpu=26.1 latency=25.45` → resumed →
 `CLEARED failed: hnguyen.clustertwin:node_1 (updates resumed)`.
 
+**2026-09-15, superseded same-day:** a pass driven by
+[`notes/EXPERIMENTAL_TWIN_REQUIREMENTS.md`](EXPERIMENTAL_TWIN_REQUIREMENTS.md)
+made "unchanged" a tolerance-band comparison (kept, see below) and had the
+detector PATCH its prediction back to Ditto every cycle. The write-back half
+was deliberately reverted the same session, before being relied on for
+anything: it flips a property (`twin/failure_detector.py` never PATCHes) this
+repo's own audit trail had independently verified and cited multiple times,
+and that's a decision that needs its own explicit go-ahead, not something to
+fold silently into "add a predictor." Real numbers from that reverted version
+(it did work) are preserved in git history for the record, not in this file.
+
+**As of 2026-09-16, current behavior:** "unchanged" is a tolerance-band
+comparison, not exact equality — exact equality was dormant against synthetic
+`random.uniform()` data but would misfire on a real sensor sitting at physical
+equilibrium. On timeout, the detector fits a per-feature linear regression
+over each node's own rolling buffer of recent *real* samples (frozen the
+instant the node goes quiet, extrapolation capped at one window-width past the
+last real sample so a long failure settles rather than drifting toward a
+clamp), via [`twin/predictor.py`](../twin/predictor.py). **The prediction is
+logged only** — `notes/_failure_state.json` and the console, alongside the
+actual last-known real value — and never reaches Ditto or Grafana. See
+[`notes/PREDICTOR_VALIDATION.md`](PREDICTOR_VALIDATION.md) for the validation
+run (a full `node_0` ramp cycle with measured error at several checkpoints,
+plus a long-window distributional check on three noise nodes) and the
+explicit no-PATCH-invariant verification.
+
 **Paper:** Kafka-ML predicts a plausible next value from historical data and
 writes that predicted state into the twin (full Hono→Kafka-ML→Ditto lifecycle).
+This repo's predictor matches the "predict on timeout" shape using ordinary
+least-squares instead of a trained model (no historical training corpus
+exists here to fit one against), but deliberately does not match the
+"writes it into the twin" half yet.
 
-**What I'd build next with more time:** replace hold-last-value with a small
-online predictor (even a rolling mean / ARIMA) fed from Influx history, then
-optionally wire a real streaming ML path if Kafka is added to the deployment.
+**Known limitation, found during verification:** on a node with no real trend
+(9 of the 10 nodes are pure `random.uniform` noise with no temporal structure
+— see `EXPERIMENTAL_TWIN_REQUIREMENTS.md` section 2.3), a small residual slope
+estimated from a real but finite sample is small but not exactly zero (least
+squares on i.i.d. data has no reason to land on precisely 0), which can pull
+the prediction measurably off the true sample mean before the extrapolation
+cap and feature clamp bound it. This is expected behavior for least-squares on
+a finite noisy sample, not a bug — the fidelity claim this repo can actually
+back up on those nine nodes is distributional (stays in range, approximates
+the mean over many samples), not point-wise accuracy at any one instant. See
+`PREDICTOR_VALIDATION.md` for the measured numbers.
 
 ## Auth
 

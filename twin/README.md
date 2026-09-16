@@ -20,7 +20,7 @@ Run from the repo root, venv activated, `.env` loaded. **Three terminals** — `
 |---|---|---|
 | [publisher.py](publisher.py) | 3 s | PATCH node features on Ditto HTTP. No MQTT inbound. |
 | [aggregator.py](aggregator.py) | 7 s | PATCH rack features from child nodes, then cluster features from **the two rack twins only**. Healthy = CPU &lt; 80. |
-| [failure_detector.py](failure_detector.py) | poll ~2 s, fail after 9 s | Logs `FAILED` / `CLEARED`. Does **not** PATCH Ditto. Hold-last-value is the publisher skipping paused IDs. |
+| [failure_detector.py](failure_detector.py) | poll ~2 s, fail after 9 s | Logs `FAILED` / `CLEARED`. **As of 2026-09-16, also logs a predicted value, log-only** (linear extrapolation over the node's own recent real history, via [predictor.py](predictor.py)) to `notes/_failure_state.json` and the console, alongside the actual last-known value — see [notes/PREDICTOR_VALIDATION.md](../notes/PREDICTOR_VALIDATION.md). **Never PATCHes Ditto** (verified there, both by code review and live against the nginx access log). Before 2026-09-15 it only logged and held, passively, via the publisher skipping paused IDs, with no prediction computed at all. |
 
 ```powershell
 python -u twin\publisher.py
@@ -57,4 +57,4 @@ If publisher is stopped, the detector will `FAILED` every node after the toleran
 
 ## Out of scope (same as root README)
 
-Direct HTTP inbound instead of Hono→Kafka. Hold-last-value instead of Kafka-ML. No Unity panel. Connectivity API `devops:foobar` is **not** used by these three processes (MQTT connection setup is [scripts/phase5_mqtt_influx.py](../scripts/phase5_mqtt_influx.py)).
+Direct HTTP inbound instead of Hono→Kafka. Lightweight, log-only linear-regression extrapolation instead of a trained Kafka-ML model that writes its prediction back into the twin (no historical training corpus exists in this repo to train one, and write-back is a deliberately separate, not-yet-taken decision — see [notes/EXPERIMENTAL_TWIN_REQUIREMENTS.md](../notes/EXPERIMENTAL_TWIN_REQUIREMENTS.md) and [notes/PREDICTOR_VALIDATION.md](../notes/PREDICTOR_VALIDATION.md)). No Unity panel. Connectivity API `devops:foobar` is **not** used by these three processes (MQTT connection setup is [scripts/phase5_mqtt_influx.py](../scripts/phase5_mqtt_influx.py)).

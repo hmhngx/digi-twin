@@ -159,11 +159,15 @@ Host-side MQTT for the **manual** Telegraf test is `localhost:1883`. That is a d
 
 ### Failure detector (simplified vs paper §3.3)
 
-[twin/failure_detector.py](twin/failure_detector.py) polls node features (~2 s) and compares signatures. Tolerance default **9 s**. Pause a node by writing its Thing ID to `notes/_paused_nodes.json` (publisher skips those IDs). On timeout it logs `FAILED` and **does not PATCH Ditto**. “Hold last-known value” is **passive**. The paper predicts a next value via Kafka-ML.
+[twin/failure_detector.py](twin/failure_detector.py) polls node features (~2 s) and compares against a tolerance band (not exact equality, as of 2026-09-15 — see [notes/EXPERIMENTAL_TWIN_REQUIREMENTS.md](notes/EXPERIMENTAL_TWIN_REQUIREMENTS.md)). Tolerance default **9 s**. Pause a node by writing its Thing ID to `notes/_paused_nodes.json` (publisher skips those IDs). On timeout it logs `FAILED` and **predicts a value, log-only** — a per-feature linear extrapolation over the node's own recent real history ([twin/predictor.py](twin/predictor.py)), recorded in `notes/_failure_state.json` and the console alongside the actual last-known value. **Nothing is PATCHed to Ditto** — this invariant is explicitly verified in [notes/PREDICTOR_VALIDATION.md](notes/PREDICTOR_VALIDATION.md), both by code review (the detector's only Ditto call anywhere in the file is the read-only GET) and live, via the nginx access log during a real pause window. The paper predicts a next value via a trained Kafka-ML model and writes it into the twin; this repo's predictor is the same shape (predict on timeout) using ordinary least-squares instead of a trained model, but log-only rather than written back — see `PREDICTOR_VALIDATION.md` for why, and for the one earlier pass in this repo's history that did write back and was deliberately reverted.
 
 `--pause` / `--resume` are one-shot CLI writes to the pause file; the long-running loop does not write that file.
 
-2026-08-25: after publisher stopped, the detector logged `FAILED` for all 10 nodes at ~9.8 s with held CPU/latency. That is expected when nothing is PATCHing. It is **not** a live pause-file demo.
+2026-08-25 (pre-dates the prediction work below): after publisher stopped, the detector logged `FAILED` for all 10 nodes at ~9.8 s with held CPU/latency, passively (nothing computing or logging a prediction). That behavior described the detector before 2026-09-15.
+
+**2026-09-15, superseded:** a same-day pass implemented and live-verified *write-back* (PATCHing the prediction to Ditto) — real numbers from that run are preserved in this repo's git history for the record, but that behavior no longer exists in the code. It was deliberately reverted the same session, before being relied on for anything, because write-back changes a property (the detector never PATCHes) this repo's own audit trail had independently verified and cited multiple times, and that change needs its own explicit go-ahead rather than being folded into a "add prediction" task.
+
+**2026-09-16, current behavior, verified live:** see [notes/PREDICTOR_VALIDATION.md](notes/PREDICTOR_VALIDATION.md) for the full run — a real ~400s+ `node_0` ramp cycle with per-checkpoint predicted-vs-true-formula error, a long-window distributional check on three noise nodes, and the explicit no-PATCH-invariant verification.
 
 ---
 
@@ -175,7 +179,8 @@ Host-side MQTT for the **manual** Telegraf test is `localhost:1883`. That is a d
 | [twin/ditto_client.py](twin/ditto_client.py) | HTTP helpers, Basic Auth `ditto:ditto` |
 | [twin/publisher.py](twin/publisher.py) | Inbound PATCH |
 | [twin/aggregator.py](twin/aggregator.py) | Rack then cluster aggregation |
-| [twin/failure_detector.py](twin/failure_detector.py) | Stale-node detector |
+| [twin/failure_detector.py](twin/failure_detector.py) | Stale-node detector; logs a predicted value on timeout, log-only, never PATCHes (as of 2026-09-16) |
+| [twin/predictor.py](twin/predictor.py) | Pure-math linear-extrapolation predictor used by failure_detector.py; imports nothing from ditto_client |
 | [twin/README.md](twin/README.md) | Package-level CLI notes (this file is the operator/architecture doc) |
 | [scripts/setup_types_and_twins.py](scripts/setup_types_and_twins.py) | Create types, instances, links |
 | [scripts/phase5_mqtt_influx.py](scripts/phase5_mqtt_influx.py) | `create-connection` / `status` / `manual-test` / `query` |
@@ -372,7 +377,7 @@ No desktop-browser click-through was available in the 2026-08-25 agent session; 
 ## Known gaps and operational traps
 
 1. **Inbound is HTTP PATCH**, not Hono → Kafka. Outbound MQTT → Telegraf → Influx **is** the platform path.
-2. **Failure detector is hold-last-value (passive)**, not Kafka-ML prediction.
+2. **Failure detector predicts, log-only, as of 2026-09-16** (linear extrapolation, not a trained Kafka-ML model — see `notes/EXPERIMENTAL_TWIN_REQUIREMENTS.md` and `notes/PREDICTOR_VALIDATION.md`). It does **not** write the prediction to Ditto (a same-day 2026-09-15 pass did, and was deliberately reverted — see PREDICTOR_VALIDATION.md). Before 2026-09-15 it was hold-last-value (passive, no prediction computed at all).
 3. **No Unity / WebGL** visualization (Grafana still installs OpenTwins plugin zips, including a Unity panel zip, during pod init; this PoC does not use that panel).
 4. **Publisher and aggregator exit on Ditto outage.** Restart them after port-forward or pod recovery.
 5. **Port-forwards die silently** over long Windows sessions. Re-check `netstat` + curl, not the script banner.
