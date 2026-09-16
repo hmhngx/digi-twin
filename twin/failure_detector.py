@@ -1,17 +1,28 @@
 """
-Phase 6 — simplified sensor-failure detection.
+Phase 6 — sensor-failure detection with lightweight, log-only prediction.
 
 Tracks last successful publish timestamp per node (by reading Ditto features
-or by watching publisher heartbeats via a shared pause file). "Unchanged" is
-now a tolerance-band comparison, not exact equality
-(notes/EXPERIMENTAL_TWIN_REQUIREMENTS.md section 3.2): exact equality was
-dormant against synthetic random.uniform() data (four independent values
-colliding exactly, cycle over cycle, is a probability-zero event) but would
-misfire on a real sensor sitting at physical equilibrium, where the same
-value can legitimately repeat.
+or by watching publisher heartbeats via a shared pause file). "Unchanged" is a
+tolerance-band comparison, not exact equality (notes/EXPERIMENTAL_TWIN_REQUIREMENTS.md
+section 3.2) -- exact equality was dormant on synthetic random.uniform() data
+but would misfire on a real sensor sitting at physical equilibrium. This must
+land ahead of prediction below: a node is "gone quiet" based on whether a new
+poll actually arrived within the expected interval, not on byte-identical
+values, since a real sensor (or, later, a value that legitimately resembles a
+prior one) shouldn't be misread as a live update.
 
-Simplification vs paper Section 3.3: on timeout we HOLD last-known feature
-values unchanged. The paper predicts a plausible next value via Kafka-ML.
+On timeout, each node's own rolling buffer of recent *real* samples (frozen
+the instant it goes quiet) is handed to twin.predictor, which extrapolates a
+per-feature linear trend. This is a lightweight, non-ML analog of the paper's
+actual mechanism (OpenTwins, Robles et al. 2023, Section 3.3): "Kafka-ML will
+predict the next state of the system to avoid a service interruption due to
+the sensor failure." Unlike the paper, and unlike this repo's own prior
+session in this conversation, this is LOG-ONLY: the prediction is recorded in
+notes/_failure_state.json and printed to the console, alongside the actual
+last-known real value, and nothing is written back to Ditto. See
+notes/PREDICTOR_VALIDATION.md for the validation run and the explicit
+no-PATCH-invariant check, and notes/EXPERIMENTAL_TWIN_REQUIREMENTS.md for why
+a trained model isn't used here (no historical training corpus exists).
 """
 from __future__ import annotations
 
@@ -19,6 +30,7 @@ import argparse
 import json
 import sys
 import time
+from collections import deque
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +38,7 @@ sys.path.insert(0, str(ROOT))
 
 from twin.config import FAILURE_TOLERANCE_SEC, NODE_IDS, PUBLISH_INTERVAL_SEC
 from twin.ditto_client import ditto, enc
+from twin.predictor import predict
 
 PAUSE_FILE = ROOT / "notes" / "_paused_nodes.json"
 STATE_FILE = ROOT / "notes" / "_failure_state.json"
@@ -34,9 +47,12 @@ FEATURES = ("cpu", "mem", "conns", "latency")
 # How much a feature may drift between polls and still count as "unchanged."
 # conns is an integer connection count -- real fluctuation there is itself a
 # sign of life, so no slack is given. The other three are continuous and get
-# a small absolute band. Chosen starting values, not measured ones -- no real
-# hardware exists yet to derive these from.
+# a small absolute band, per EXPERIMENTAL_TWIN_REQUIREMENTS.md section 3.2.
+# These are chosen starting values, not measured ones -- see PREDICTOR_VALIDATION.md.
 UNCHANGED_TOLERANCE = {"cpu": 0.5, "mem": 0.5, "conns": 0, "latency": 0.5}
+HISTORY_WINDOW = 10  # real samples kept per node -- gated by the ~3s publish
+# cadence (PUBLISH_INTERVAL_SEC), not the ~2s poll loop below, since most polls
+# just re-observe the still-current published value. ~30s of real history.
 
 
 def load_paused() -> set[str]:
@@ -87,12 +103,14 @@ def _within_tolerance(a: dict | None, b: dict | None) -> bool:
 
 def run(duration: float | None = None) -> None:
     last_seen: dict[str, float] = {n: time.time() for n in NODE_IDS}
-    last_real: dict[str, dict] = {}  # last snapshot confirmed to come from the publisher
+    last_real: dict[str, dict] = {}    # last snapshot confirmed to come from the publisher
+    history: dict[str, deque] = {n: deque(maxlen=HISTORY_WINDOW) for n in NODE_IDS}
     failed: set[str] = set()
+    predicted_now: dict[str, dict] = {}
     t0 = time.time()
     print(
         f"Failure detector started: interval~{PUBLISH_INTERVAL_SEC}s "
-        f"tolerance={FAILURE_TOLERANCE_SEC}s"
+        f"tolerance={FAILURE_TOLERANCE_SEC}s (log-only prediction, no Ditto write-back)"
     )
     print(f"Pause nodes by writing IDs to {PAUSE_FILE} (publisher honors this too).")
 
@@ -105,26 +123,38 @@ def run(duration: float | None = None) -> None:
                 continue
             current = {f: snap[f] for f in FEATURES}
 
-            # If publisher paused this node, features should stop changing
             if node_id in paused:
-                # do not refresh last_seen from polls while paused
-                pass
+                pass  # do not refresh last_seen/history from polls while paused
             elif not _within_tolerance(current, last_real.get(node_id)):
+                # A genuinely new real value from the publisher (nothing ever
+                # writes a prediction back to Ditto in this build, so any
+                # value read here that isn't within tolerance of the last
+                # real one can only be a fresh publisher update).
                 last_real[node_id] = current
                 last_seen[node_id] = now
                 if node_id in failed:
+                    history[node_id].clear()  # don't stitch a fit across the failure gap
                     failed.discard(node_id)
+                    predicted_now.pop(node_id, None)
                     print(f"CLEARED failed: {node_id} (updates resumed)")
+                history[node_id].append((now, dict(current)))
 
             age = now - last_seen[node_id]
-            if age > FAILURE_TOLERANCE_SEC and node_id not in failed:
-                failed.add(node_id)
-                held = last_real.get(node_id, current)
-                print(
-                    f"FAILED {node_id}: no real update for {age:.1f}s; "
-                    f"holding last-known values "
-                    f"cpu={held['cpu']} latency={held['latency']}"
-                )
+            if age > FAILURE_TOLERANCE_SEC:
+                if node_id not in failed:
+                    failed.add(node_id)
+                    print(
+                        f"FAILED {node_id}: no real update for {age:.1f}s; "
+                        f"predicting (log-only) from {len(history[node_id])} real samples"
+                    )
+                if len(history[node_id]) >= 2:
+                    prediction = predict(list(history[node_id]), now, node_id)
+                    predicted_now[node_id] = prediction
+                    last = last_real.get(node_id, {})
+                    print(
+                        f"  {node_id} predicted={{{', '.join(f'{k}={v:.2f}' for k, v in prediction.items())}}} "
+                        f"last_known={{{', '.join(f'{k}={v:.2f}' for k, v in last.items())}}}"
+                    )
 
         STATE_FILE.write_text(
             json.dumps(
@@ -137,6 +167,10 @@ def run(duration: float | None = None) -> None:
                     "last_known": {
                         n: {k: round(v, 2) for k, v in v_.items()}
                         for n, v_ in last_real.items()
+                    },
+                    "predicted": {
+                        n: {k: round(v, 2) for k, v in p.items()}
+                        for n, p in predicted_now.items()
                     },
                 },
                 indent=2,
