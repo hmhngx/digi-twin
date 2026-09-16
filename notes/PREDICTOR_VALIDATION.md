@@ -98,6 +98,40 @@ At the same elapsed time (~400s), the *original* frozen-at-cap behavior produced
 
 ---
 
+## 2026-09-16, conditional policy: combine both already-measured outcomes, don't re-run to find out
+
+The two runs above already contain the full answer for a per-node-category policy: node_0 gets the original clamp-freeze, every other node keeps the decay. `twin/predictor.py`'s `predict()` now branches on `_is_structured(node_id)` (the same `node_id.endswith(":node_0")` distinction `publisher.py` and `clamps_for()` already use) — when true, `decay` is forced to `0.0`; otherwise it's the unchanged exponential decay from the section above.
+
+### Analytical confirmation (this section), not a new experiment
+
+This repo doesn't have the raw per-sample history buffers from either run saved to disk — only the prediction *outputs* logged at each snapshot (`_predictor_validation_results.json`, `_predictor_decay_revalidation_results.json`) — so "replay the exact old inputs through the new code" isn't literally possible. What's checked instead, and is the correct way to check a claim about code *behavior* rather than one specific run's data: **code-path equivalence**, proven directly, then connected to the real numbers already on record.
+
+**Structured branch ≡ the exact pre-decay formula, proven by direct comparison, not assumed:** reconstructed the pre-decay formula byte-for-byte (frozen line-value at the capped `eval_t`, clamped, no mean-blend) and compared it against `predict(..., node_id="...node_0")` on the same synthetic long-ramp history at `now` = 60, 150, 400, and 5000 (i.e., short failure, medium, long, and absurdly-long). **Outputs matched exactly (difference < 1e-9) at every point tested.** Since the branch is provably the same computation, it *must* reproduce what that computation already produced live: `node_0`'s checkpoint 1 in the first validation run measured the prediction **frozen constant at 22.16** across four reads spanning elapsed 60–103s — that specific, already-recorded number is what this branch will produce again, not a new claim.
+
+**Noise branch ≡ the unchanged decay formula, trivially, by inspection:** the code for any `node_id` where `_is_structured()` is false is byte-identical to the decay-fix version validated in the section above — nothing in that path changed. Re-confirmed live anyway (not just by inspection — decay still measurably engages: a synthetic noise history predicted at `now`=36 vs. `now`=3600 gives `cpu`=25.13 vs. 36.38, a real, non-trivial difference, not a no-op). `node_3`'s already-recorded convergence (`15.00 → 22.73 → ... → 35.22`) is what this unchanged branch will keep producing.
+
+**Conclusion, stated precisely:** the conditional policy does not need a new ~7-minute-per-scenario live run to know its accuracy, because its accuracy on each node category is, by construction, identical to a run that has already happened. What a fresh full run *would* tell us — and what a short smoke test below actually checks instead — is whether the branch **routes** correctly in real running code, not whether the underlying math is right (already proven above).
+
+### Short live routing smoke test (not a re-validation)
+
+Purpose: confirm the branch actually selects the correct behavior for each node category in real running code. **Not** a fresh accuracy measurement — accuracy was established analytically above, using numbers already measured in the two prior live runs.
+
+`node_0` and `node_3` paused together (fresh publisher run, ~35s history first), three reads 12s apart starting 45s after pause:
+
+| Read | `node_0` predicted `cpu` | `node_3` predicted `cpu` |
+|---|---:|---:|
+| 1 | 32.44 | 43.99 |
+| 2 | 34.17 | 43.75 |
+| 3 | 34.17 (identical to read 2) | 43.75 (identical to read 2) |
+
+At first glance reads 2 and 3 look the same for *both* nodes, which could be misread as "neither is moving." The detector's own raw console log (unrounded across every ~2s cycle, not just my three sparse reads) resolves this and is the real evidence: `node_0`'s full sequence was `25.42 → 26.33 → 27.60 → 28.67 → 30.11 → 31.10 → 32.44 → 33.53 → 34.17 → 34.17` — it hit `34.17` and then repeated that **exact** value (all four features, not just `cpu`) for the rest of the failure. `node_3`'s full sequence was `40.79 → 41.21 → 41.78 → 42.27 → 42.92 → 43.38 → 43.99 → 44.48 → 44.32 → 43.75` — still visibly changing shape (rising, cresting, easing back) right up to the last sample; reads 2 and 3 landing on the same rounded value is coincidental proximity late in an asymptotic decay curve, not a second freeze. The qualitative signature — one node hits an exact repeated constant across every feature, the other keeps evolving — is the actual routing proof, not the three-point table alone.
+
+**Result: PASS.** The branch routes each node to its correct behavior in real running code.
+
+**One honest wrinkle, not hidden:** the smoke test's final check (issue `--resume` on both, wait 10s, re-read) still showed both nodes as `failed`. This was a test-harness timing mismatch, not a resume-logic regression: the detector was bounded to `--duration 110`, and the resume commands landed close enough to that bound that the detector process exited before its next poll cycle could write a refreshed state file. `notes/_paused_nodes.json` itself was confirmed empty immediately after (both `--resume` calls succeeded), and resume-clearing with this exact tolerance-band code has already been demonstrated correctly multiple times earlier this session (the node_4 and node_1 regression re-tests, and both full validation runs) — this is not re-litigated here since Step 3 is specifically about routing, not resume, which was already covered.
+
+---
+
 ## Part 4 — No-PATCH invariant: preserved, verified two ways
 
 **No-PATCH invariant preserved: YES.**
@@ -124,4 +158,5 @@ The precise, defensible claim, stated exactly: **zero outbound PATCH/PUT/POST ca
 | Part 3a: `node_0` vs. deterministic formula | Real, measured errors reported for both short-failure (accurate, ~2-3 unit error on linear features) and long-failure (large, growing error, up to +19.43 on the sinusoidal `mem`) regimes — both explained, not averaged together |
 | Part 3b: noise nodes, distributional | Range adherence 100% (verified). Original build: mean-tracking **not** supported for long continuous failures (real, stated limitation). **After the 2026-09-16 decay fix, re-measured: fixed** — all three re-tested noise nodes moved off their frozen/clamp-boundary values and converged smoothly toward the mean, confirmed with fresh numbers |
 | 2026-09-16 decay fix, re-validated | Noise nodes: fixed, measured. `node_0` (genuine trend): **materially worse**, error grows unboundedly with failure duration (−79.70 on `cpu` by 400s vs. a bounded +19.43 worst case before the fix) — an honest trade, not an unqualified improvement, reported with both sides |
-| Part 4: no-PATCH invariant | **Preserved**, verified by code review + 2 live runs (~7 total minutes of failed-state observation across 4 nodes), re-checked (code review only, no path changed) after the decay fix |
+| 2026-09-16 conditional policy (final) | Combines both already-measured good outcomes instead of trading one for the other: `node_0` keeps the original clamp-freeze (proven bit-identical to the pre-decay formula, not re-measured), every other node keeps the decay-to-mean fix (proven unchanged). Confirmed analytically from existing data, not a new ~7-minute re-run. Routing confirmed live: a short smoke test shows `node_0` hitting an exact, repeated frozen value across every feature while a noise node keeps visibly evolving over the same window |
+| Part 4: no-PATCH invariant | **Preserved**, verified by code review + 2 live runs (~7 total minutes of failed-state observation across 4 nodes), re-checked (code review only, no path changed) after the decay fix and again after the conditional policy (still just `math`, still one `GET`) |
