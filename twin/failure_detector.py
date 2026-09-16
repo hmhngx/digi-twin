@@ -2,7 +2,13 @@
 Phase 6 — simplified sensor-failure detection.
 
 Tracks last successful publish timestamp per node (by reading Ditto features
-or by watching publisher heartbeats via a shared pause file).
+or by watching publisher heartbeats via a shared pause file). "Unchanged" is
+now a tolerance-band comparison, not exact equality
+(notes/EXPERIMENTAL_TWIN_REQUIREMENTS.md section 3.2): exact equality was
+dormant against synthetic random.uniform() data (four independent values
+colliding exactly, cycle over cycle, is a probability-zero event) but would
+misfire on a real sensor sitting at physical equilibrium, where the same
+value can legitimately repeat.
 
 Simplification vs paper Section 3.3: on timeout we HOLD last-known feature
 values unchanged. The paper predicts a plausible next value via Kafka-ML.
@@ -23,6 +29,14 @@ from twin.ditto_client import ditto, enc
 
 PAUSE_FILE = ROOT / "notes" / "_paused_nodes.json"
 STATE_FILE = ROOT / "notes" / "_failure_state.json"
+
+FEATURES = ("cpu", "mem", "conns", "latency")
+# How much a feature may drift between polls and still count as "unchanged."
+# conns is an integer connection count -- real fluctuation there is itself a
+# sign of life, so no slack is given. The other three are continuous and get
+# a small absolute band. Chosen starting values, not measured ones -- no real
+# hardware exists yet to derive these from.
+UNCHANGED_TOLERANCE = {"cpu": 0.5, "mem": 0.5, "conns": 0, "latency": 0.5}
 
 
 def load_paused() -> set[str]:
@@ -58,9 +72,22 @@ def snapshot_node(node_id: str) -> dict | None:
     }
 
 
+def _within_tolerance(a: dict | None, b: dict | None) -> bool:
+    """True if every feature in `a` is within UNCHANGED_TOLERANCE of `b`."""
+    if a is None or b is None:
+        return False
+    for f in FEATURES:
+        av, bv = a.get(f), b.get(f)
+        if av is None or bv is None:
+            return False
+        if abs(av - bv) > UNCHANGED_TOLERANCE[f]:
+            return False
+    return True
+
+
 def run(duration: float | None = None) -> None:
     last_seen: dict[str, float] = {n: time.time() for n in NODE_IDS}
-    last_sig: dict[str, str] = {}
+    last_real: dict[str, dict] = {}  # last snapshot confirmed to come from the publisher
     failed: set[str] = set()
     t0 = time.time()
     print(
@@ -76,16 +103,14 @@ def run(duration: float | None = None) -> None:
             snap = snapshot_node(node_id)
             if snap is None:
                 continue
-            sig = json.dumps(
-                [snap["cpu"], snap["mem"], snap["conns"], snap["latency"]],
-                sort_keys=True,
-            )
+            current = {f: snap[f] for f in FEATURES}
+
             # If publisher paused this node, features should stop changing
             if node_id in paused:
                 # do not refresh last_seen from polls while paused
                 pass
-            elif last_sig.get(node_id) != sig:
-                last_sig[node_id] = sig
+            elif not _within_tolerance(current, last_real.get(node_id)):
+                last_real[node_id] = current
                 last_seen[node_id] = now
                 if node_id in failed:
                     failed.discard(node_id)
@@ -94,10 +119,11 @@ def run(duration: float | None = None) -> None:
             age = now - last_seen[node_id]
             if age > FAILURE_TOLERANCE_SEC and node_id not in failed:
                 failed.add(node_id)
+                held = last_real.get(node_id, current)
                 print(
-                    f"FAILED {node_id}: no feature change for {age:.1f}s; "
+                    f"FAILED {node_id}: no real update for {age:.1f}s; "
                     f"holding last-known values "
-                    f"cpu={snap['cpu']} latency={snap['latency']}"
+                    f"cpu={held['cpu']} latency={held['latency']}"
                 )
 
         STATE_FILE.write_text(
@@ -107,6 +133,10 @@ def run(duration: float | None = None) -> None:
                     "paused": sorted(paused),
                     "last_seen_age_s": {
                         n: round(now - last_seen[n], 2) for n in NODE_IDS
+                    },
+                    "last_known": {
+                        n: {k: round(v, 2) for k, v in v_.items()}
+                        for n, v_ in last_real.items()
                     },
                 },
                 indent=2,
