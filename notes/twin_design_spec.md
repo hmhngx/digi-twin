@@ -198,6 +198,8 @@ least-squares instead of a trained model (no historical training corpus
 exists here to fit one against), but deliberately does not match the
 "writes it into the twin" half yet.
 
+**Same-day addendum, 2026-09-16 (after this section was first written):** past the extrapolation cap, recovery is conditional on node category, not uniform. `node_0` (a known deterministic formula, `_is_structured()` in `twin/predictor.py`) stays frozen at the capped value — decaying it toward its own training-window mean was tried and measured worse (error grew unboundedly on a node that's still genuinely trending). Every noise node (`node_1`–`node_9`) decays the frozen value toward the training window's empirical mean instead of sitting at a fixed number indefinitely. See `notes/PREDICTOR_VALIDATION.md`'s later sections for the measured arc behind this branch.
+
 **Known limitation, found during verification:** on a node with no real trend
 (9 of the 10 nodes are pure `random.uniform` noise with no temporal structure
 — see `EXPERIMENTAL_TWIN_REQUIREMENTS.md` section 2.3), a small residual slope
