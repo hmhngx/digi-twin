@@ -2,14 +2,18 @@
 Phase 6 — sensor-failure detection with lightweight, log-only prediction.
 
 Tracks last successful publish timestamp per node (by reading Ditto features
-or by watching publisher heartbeats via a shared pause file). "Unchanged" is a
-tolerance-band comparison, not exact equality (notes/EXPERIMENTAL_TWIN_REQUIREMENTS.md
-section 3.2) -- exact equality was dormant on synthetic random.uniform() data
-but would misfire on a real sensor sitting at physical equilibrium. This must
-land ahead of prediction below: a node is "gone quiet" based on whether a new
-poll actually arrived within the expected interval, not on byte-identical
-values, since a real sensor (or, later, a value that legitimately resembles a
-prior one) shouldn't be misread as a live update.
+or by watching publisher heartbeats via a shared pause file). Liveness and
+change are two different questions, and this module keeps them decoupled on
+purpose (a real bug from conflating them, found 2026-09-17, is documented in
+detail at the fix site in run() below and in notes/PREDICTOR_VALIDATION.md):
+a node is "gone quiet" purely based on whether a poll of it succeeded within
+FAILURE_TOLERANCE_SEC, full stop -- never on whether the value it reported
+was different from last time. "Unchanged" is a separate, tolerance-band
+comparison (not exact equality, notes/EXPERIMENTAL_TWIN_REQUIREMENTS.md
+section 3.2 -- exact equality was dormant on synthetic random.uniform() data
+but would misfire on a real sensor sitting at physical equilibrium) used only
+to decide what counts as a fresh *real sample* worth recording for logging
+and prediction, not whether the node is alive.
 
 On timeout, each node's own rolling buffer of recent *real* samples (frozen
 the instant it goes quiet) is handed to twin.predictor, which extrapolates a
@@ -124,20 +128,36 @@ def run(duration: float | None = None) -> None:
             current = {f: snap[f] for f in FEATURES}
 
             if node_id in paused:
-                pass  # do not refresh last_seen/history from polls while paused
-            elif not _within_tolerance(current, last_real.get(node_id)):
-                # A genuinely new real value from the publisher (nothing ever
-                # writes a prediction back to Ditto in this build, so any
-                # value read here that isn't within tolerance of the last
-                # real one can only be a fresh publisher update).
-                last_real[node_id] = current
+                pass  # do not refresh last_seen/history from polls while paused --
+                # this is the deliberate simulated-silence path and must still age out.
+            else:
+                # Liveness: this poll succeeded just now, independent of whether the
+                # value changed. This must NOT be gated by the tolerance check below --
+                # a real signal that is genuinely stable (at equilibrium, plateaued,
+                # under constant load) will legitimately stay within tolerance
+                # forever, and conflating "unchanged" with "no update arrived" marks
+                # a live, healthy node FAILED permanently. Found by code review during
+                # hardware-measurement planning, 2026-09-17, before any real hardware
+                # existed to observe it on; confirmed live both ways: node_0's own
+                # plateau (publisher.py holds cpu/latency/conns exactly constant past
+                # elapsed=360s) spuriously FAILED under the old code, twice, each time
+                # mem's continued sine oscillation lingered near a peak or trough long
+                # enough to also stay within tolerance for >9s -- see
+                # notes/PREDICTOR_VALIDATION.md for the real run and timestamps.
                 last_seen[node_id] = now
-                if node_id in failed:
-                    history[node_id].clear()  # don't stitch a fit across the failure gap
-                    failed.discard(node_id)
-                    predicted_now.pop(node_id, None)
-                    print(f"CLEARED failed: {node_id} (updates resumed)")
-                history[node_id].append((now, dict(current)))
+                if not _within_tolerance(current, last_real.get(node_id)):
+                    # A genuinely new-looking real value -- still used to decide what
+                    # counts as "the last known real sample" for logging/state and
+                    # what feeds the predictor's history buffer (a classification /
+                    # recording decision, not a liveness one -- see
+                    # EXPERIMENTAL_TWIN_REQUIREMENTS.md section 3.2).
+                    last_real[node_id] = current
+                    if node_id in failed:
+                        history[node_id].clear()  # don't stitch a fit across the failure gap
+                        failed.discard(node_id)
+                        predicted_now.pop(node_id, None)
+                        print(f"CLEARED failed: {node_id} (updates resumed)")
+                    history[node_id].append((now, dict(current)))
 
             age = now - last_seen[node_id]
             if age > FAILURE_TOLERANCE_SEC:
