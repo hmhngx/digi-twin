@@ -1,12 +1,21 @@
 # Cluster Twin — OpenTwins proof of concept
 
-This repository is **application code** for a compute-cluster digital twin. It is **not** the OpenTwins platform, **not** a Docker Compose stack, and **not** a Helm chart.
+This repository is **application code** for a compute-cluster twin built on OpenTwins — a mixed system, not a full digital twin (see [What kind of twin this is](#what-kind-of-twin-this-is-precisely) below). It is **not** the OpenTwins platform, **not** a Docker Compose stack, and **not** a Helm chart.
 
 The twin runs against an **already-deployed OpenTwins Helm release inside Minikube** (Eclipse Ditto, Ditto Extended API, Mosquitto, Telegraf, InfluxDB v2, Grafana). This repo talks to that stack over `kubectl port-forward` to localhost.
 
 **Last live walkthrough of this README:** 2026-08-25 (Windows 11, Minikube v1.38.1 docker driver, Python 3.12.10 venv). Claims below that are marked as that session were observed then. Dated files under `notes/` are historical; do not mix their numbers into this page.
 
 Paper analog (Robles / Martín / Díaz 2023, *Computers in Industry*): Factory → Robot → Sensor becomes **Cluster → Rack → Node**. This PoC does **not** reproduce the paper’s Hono → Kafka inbound path, Kafka-ML failure prediction, or Unity 3D panel.
+
+### What kind of twin this is, precisely
+
+As of 2026-09-22. Uses the Digital Model / Digital Shadow / Digital Twin split by automated data flow — none / one-way physical → digital / both ways — commonly attributed to Kritzinger et al., "Digital Twin in manufacturing: A categorical literature review and classification", *IFAC-PapersOnLine* 51(11), 2018, pp. 1016–1022. It is applied to this repo in [notes/DIGITAL_TWIN_ADAPTATION_ANALYSIS.md](notes/DIGITAL_TWIN_ADAPTATION_ANALYSIS.md) §3. Each claim below applies to the nodes it names, not to the whole system:
+
+- **`node_0` — Digital Shadow node.** Its four features are measured from the machine running `twin/publisher.py` (psutil CPU and memory, a count of ESTABLISHED TCP connections, a timed TCP connect to `1.1.1.1:443`) and flow into Ditto automatically, one way. Nothing flows back to the machine, so it is **not** a Digital Twin. Details: [twin/README.md](twin/README.md#publisher-details).
+- **`node_1`–`node_9` — still a Digital Model.** Synthetic `random.uniform`/`random.randint` values with no physical counterpart. Unchanged.
+- **Aggregates.** `rack_0` and `main_cluster` average `node_0`'s real CPU together with synthetic nodes; `rack_1` is purely synthetic. None of them shadows anything physical.
+- **The system as a whole is mixed** — one real node, nine synthetic. It should not be described as "a digital twin", or as "a digital shadow", as a whole. Until 2026-09-22 every value any of the 13 instance twins ever held was synthetic, i.e. the whole system was a Digital Model.
 
 ## Contents
 
@@ -133,7 +142,18 @@ Aggregation ([twin/aggregator.py](twin/aggregator.py)):
 
 There is **no** Ditto MQTT **source** connection and **no** Eclipse Hono / Kafka in this deployment.
 
-2026-08-25: three publisher cycles → **30 × HTTP 204** (then two more cycles → another 20 × 204). `node_0` is a deliberate multi-minute CPU/latency ramp (~6 minutes to ~95% CPU), not random like the other nine.
+2026-08-25: three publisher cycles → **30 × HTTP 204** (then two more cycles → another 20 × 204). At that time `node_0` was a deliberate multi-minute CPU/latency ramp (~6 minutes to ~95% CPU).
+
+**Since 2026-09-22, `node_0` carries real telemetry from the machine running the publisher** — see [twin/README.md](twin/README.md#publisher-details) for exactly what each feature measures. The other nine are still random.
+
+**2026-09-22 live check (all four features).** The continuous publisher run made 3,809 PATCHes (353 of them `node_0`'s real values), every one HTTP 204, with zero probe `WARN`s. A separate process read the host independently within 4 s of each Ditto update (n=12) and compared against what Ditto stored for `node_0`. Mean absolute differences:
+
+- memory: 0.8 points (max 5.0, during a burst when free memory itself moved by over 1 GB within seconds);
+- ESTABLISHED TCP connections: 2.3 (max 9, cross-checked with `netstat`, a non-psutil tool);
+- CPU: 8.0 points (max 15.6). Expected, since each process's `cpu_percent` averages a bursty signal over its own window;
+- latency vs. an ICMP `ping` to the same host: 6.7 ms (different protocol, same order of magnitude).
+
+During a deliberate 30 s all-core CPU burst, `node_0`'s CPU went from ~58–68 to 90.3 while Windows' own `% Processor Time` counter read 87–100. The very first run also exposed a bug, since fixed: cycle 1 published `cpu_utilization=0.0`, because psutil's first CPU reading came microseconds after it was primed. **Grafana tradeoff:** `node_0` no longer draws a clean ramp. It shows whatever this machine is really doing, which is noisier, and that is the point of the change.
 
 If Ditto or the port-forward dies, publisher and aggregator **crash** (unhandled `ConnectionError`). They do not retry.
 
@@ -167,7 +187,13 @@ Host-side MQTT for the **manual** Telegraf test is `localhost:1883`. That is a d
 
 **2026-09-15, superseded:** a same-day pass implemented and live-verified *write-back* (PATCHing the prediction to Ditto) — real numbers from that run are preserved in this repo's git history for the record, but that behavior no longer exists in the code. It was deliberately reverted the same session, before being relied on for anything, because write-back changes a property (the detector never PATCHes) this repo's own audit trail had independently verified and cited multiple times, and that change needs its own explicit go-ahead rather than being folded into a "add prediction" task.
 
-**2026-09-16, current behavior, verified live:** see [notes/PREDICTOR_VALIDATION.md](notes/PREDICTOR_VALIDATION.md) for the full run — a real ~400s+ `node_0` ramp cycle with per-checkpoint predicted-vs-true-formula error, a long-window distributional check on three noise nodes, and the explicit no-PATCH-invariant verification.
+**2026-09-16, verified live at the time:** see [notes/PREDICTOR_VALIDATION.md](notes/PREDICTOR_VALIDATION.md) for the full run — a real ~400s+ `node_0` ramp cycle with per-checkpoint predicted-vs-true-formula error, a long-window distributional check on three noise nodes, and the explicit no-PATCH-invariant verification. The `node_0` parts of that run validated the predictor against the synthetic formula that generated the data. That formula no longer exists, and that method is not reused (see the next paragraph).
+
+**2026-09-22, current behavior for `node_0`:** since `node_0` became real host telemetry, the predictor treats it differently in two ways ([twin/predictor.py](twin/predictor.py)).
+- **Clamps.** Its clamps are now physical bounds only: cpu/mem in [0, 100], conns/latency ≥ 0. The old ones were the synthetic ramp's min/max. Measured live before the change: they pinned `node_0`'s predicted memory at 45.00 while the laptop was at 84.5–89.4 %.
+- **Long silences.** It now decays toward its recent mean like every other node, instead of freezing. Freezing was justified only by the ramp's known future; real host metrics measured bursty and mean-reverting.
+
+Both changes were checked only against **real** later readings of this machine, never against a formula or another prediction. That is still an imperfect proxy: it is the same machine measuring itself, and there is no independent oracle. Numbers and caveats: [notes/PREDICTOR_VALIDATION.md](notes/PREDICTOR_VALIDATION.md), 2026-09-22 section.
 
 ---
 
@@ -177,7 +203,7 @@ Host-side MQTT for the **manual** Telegraf test is `localhost:1883`. That is a d
 |---|---|
 | [twin/config.py](twin/config.py) | `.env` + Thing/type IDs |
 | [twin/ditto_client.py](twin/ditto_client.py) | HTTP helpers, Basic Auth `ditto:ditto` |
-| [twin/publisher.py](twin/publisher.py) | Inbound PATCH |
+| [twin/publisher.py](twin/publisher.py) | Inbound PATCH: `node_0` real host telemetry (psutil + timed TCP connect), `node_1`–`node_9` synthetic |
 | [twin/aggregator.py](twin/aggregator.py) | Rack then cluster aggregation |
 | [twin/failure_detector.py](twin/failure_detector.py) | Stale-node detector; logs a predicted value on timeout, log-only, never PATCHes (as of 2026-09-16) |
 | [twin/predictor.py](twin/predictor.py) | Pure-math linear-extrapolation predictor used by failure_detector.py; imports nothing from ditto_client |
@@ -190,7 +216,7 @@ Host-side MQTT for the **manual** Telegraf test is `localhost:1883`. That is a d
 | [notes/scaling_benchmark.py](notes/scaling_benchmark.py) | Dual-metric lab bench. **Overwrites** `notes/scaling_results.json`. |
 | [grafana/dashboard.json](grafana/dashboard.json) | Portable dashboard (datasource UID `opentwins` in JSON) |
 | [notes/twin_design_spec.md](notes/twin_design_spec.md) | Attribute/feature and connection design |
-| [requirements.txt](requirements.txt) | `requests`, `python-dotenv`, `paho-mqtt`, `influxdb-client`, `matplotlib` (lower bounds, not pins) |
+| [requirements.txt](requirements.txt) | `requests`, `python-dotenv`, `paho-mqtt`, `influxdb-client`, `matplotlib` (lower bounds, not pins), plus `psutil==7.2.2` (pinned, 2026-09-22 — `node_0`'s real telemetry) |
 | [.env.example](.env.example) | Copy to `.env` (gitignored) and set `INFLUX_TOKEN` |
 
 ---
@@ -395,7 +421,8 @@ No desktop-browser click-through was available in the 2026-08-25 agent session; 
 8. **Helm `STATUS: failed`** from the 2026-07-26 install timeout does not match current Ready pods. Do not “repair” it with uninstall during a demo.
 9. **Single-instance SPOFs** on this minikube: Ditto things, MongoDB, Mosquitto, Telegraf, Influx, laptop port-forwards. Not a production topology.
 10. **Do not cite a single fault-recovery second** from memory. See dated [notes/fault_tolerance_results.md](notes/fault_tolerance_results.md). Paper Test 3 (Hono MQTT adapter, 52.46 s) is a **different failure mode**.
-11. **Do not treat Influx visibility latency as Ditto’s scalability ceiling.** Telegraf `flush_interval = 10s` dominates metric (b). Dated dual-metric notes: [notes/scaling_comparison.md](notes/scaling_comparison.md), [notes/SCALING_READINESS.md](notes/SCALING_READINESS.md).
+11. **Only `node_0` is real (as of 2026-09-22).** `node_1`–`node_9` are still synthetic, and nothing flows from the twin back to the machine. Do not describe the system as "a digital twin" or "a digital shadow" as a whole — see [What kind of twin this is](#what-kind-of-twin-this-is-precisely). `node_0`'s real values depend on this laptop's state: during the 2026-09-22 run, memory sat at 84.5–97.4 %. The single largest process at one check was `vmmemWSL` — the WSL2 VM hosting Docker/Minikube — at 3.75 GB of 15.6 GB.
+12. **Do not treat Influx visibility latency as Ditto’s scalability ceiling.** Telegraf `flush_interval = 10s` dominates metric (b). Dated dual-metric notes: [notes/scaling_comparison.md](notes/scaling_comparison.md), [notes/SCALING_READINESS.md](notes/SCALING_READINESS.md).
 
 ---
 

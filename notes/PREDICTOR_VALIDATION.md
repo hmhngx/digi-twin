@@ -1,5 +1,7 @@
 # Predictor Validation — Log-Only Build
 
+> **Read this first (added 2026-09-22).** Everything about `node_0` in the 2026-09-16/17 sections below validated the predictor against **the synthetic formula that generated `node_0`'s data**, i.e. fabricated output checked against fabricated ground truth. That formula no longer exists: `node_0` is real host telemetry since 2026-09-22 (`twin/publisher.py`'s `measure_host()`). Those sections are kept as history and do **not** describe current `node_0` behavior. In particular, the `node_0` freeze branch and the old `node_0` clamps they justify have been removed, and the "Final technical summary" paragraph at the end of the 2026-09-17 section is out of date for `node_0`. The noise-node (`node_1`–`node_9`) results still stand, since that code path is byte-identical (checked). The current `node_0` validation is the [2026-09-22 section at the end](#2026-09-22--node_0-on-real-host-telemetry-validated-only-against-real-readings). One small correction to the text below as well: the decay is described as having a "half-life equal to the window width". The code's `1 - exp(-excess/window)` makes the window width the *time constant* (≈63 % of the way to the mean); the half-life is ≈0.69 × the window.
+
 **Written:** 2026-09-16, same session as the implementation. All numbers below are from real runs against the live cluster (`opentwins` Helm release, port-forwarded Ditto HTTP on `:8081`), performed in this session — none are expected/typical values.
 
 **Scope of this document:** the log-only predictor only — `twin/predictor.py` and the tolerance-band/history-buffer changes in `twin/failure_detector.py`. Nothing here writes to Ditto; that is the entire point being validated. A separate, same-day pass in this session's git history implemented and live-verified a *write-back* version and was deliberately reverted before being relied on — real numbers from that version exist in git history, not here, and are not conflated with the log-only numbers below.
@@ -196,3 +198,112 @@ Re-ran the exact same 480-second `publisher.py` + `failure_detector.py` scenario
 ### Final technical summary — how prediction works today, in one paragraph
 
 When a node goes `FAILURE_TOLERANCE_SEC` (9s) without a single successful poll landing at all — real silence, not stability, since 2026-09-17's liveness/change fix (see above) — `failure_detector.py` marks it `FAILED` and hands `predictor.py` the node's own frozen buffer of up to 10 recent real samples, where "real sample" is separately decided by a small tolerance band (`UNCHANGED_TOLERANCE`, a chosen-not-measured ±0.5 on `cpu`/`mem`/`latency` and exact-match on `conns`) that governs what counts as a fresh value worth recording, not whether the node is alive (~30s of history at the normal 3s publish cadence); `predictor.py` fits an ordinary-least-squares line per feature and extrapolates it forward, capped at one training-window-width past the last real sample so a long failure settles instead of drifting arbitrarily; past that cap, `node_0` (the one node with a real deterministic formula, per `_is_structured()`) stays frozen at the capped value, while every i.i.d.-noise node (`node_1`–`node_9`) decays the frozen value toward the training window's own empirical mean; the result is clamped to that node category's true value range and written only to `notes/_failure_state.json` and the console, alongside the actual last-known real value, and — verified repeatedly, including fresh today — **never PATCHed to Ditto or Grafana**. The honestly-scoped fidelity claim is per-category: for `node_0`, error against the live deterministic formula is small (a few units) for failures comparable to the training window and grows for much longer ones, bounded by the freeze; for the nine noise nodes, there is no meaningful per-sample "correct" value at all (each is an independent random draw), so the only claim this repo can back up is distributional — predictions stay inside the correct range 100% of the time measured, and, after the decay fix, converge toward the empirical mean rather than sticking at a clamp boundary for long failures.
+
+---
+
+## 2026-09-22 — `node_0` on real host telemetry, validated only against real readings
+
+**What changed, and why this section exists.** After Prof. Siddiqui's feedback on the live demo ("predicted data must not be used to test the digital twin"; see `notes/DIGITAL_TWIN_ADAPTATION_ANALYSIS.md`), `node_0` stopped being a synthetic ramp and became real telemetry from the laptop running `twin/publisher.py`: psutil CPU % and memory %, a count of ESTABLISHED TCP connections, and a timed TCP connect to `1.1.1.1:443`. Everything about `node_0` above was measured against the ramp formula. None of it carries over, and that method (predictor vs. the formula that generated the data) is deliberately **not** reused. Every `node_0` number below compares a prediction against a **real reading of the machine**, never against a formula and never against another prediction.
+
+**Still not an independent oracle — stated up front, not buried.** Every comparison below is this laptop measuring itself:
+- the checking process's own CPU and connections are part of what it measures;
+- two readers of `cpu_percent` average over different windows. With no prediction involved at all, an independent reader and the publisher disagreed on CPU by 8.0 points on average (max 15.6). Any CPU error below that size is indistinguishable from measurement disagreement;
+- a pause is a simulated failure — the host never actually stopped;
+- a real value re-read after a gap is one noisy instant of a bursty signal, not a known true value.
+
+What this can support is "the predictor lands in the right neighbourhood of what the machine was really doing". It cannot support "the predictor is correct".
+
+All harnesses below are gitignored (`notes/_*`), like this file's earlier ones. Raw outputs: `notes/_node0_pause_check_before_oldclamps.jsonl`, `notes/_node0_pause_check_after_newpolicy.jsonl`, `notes/_node0_trace.jsonl`, `notes/_node0_policy_backtest_results.json`.
+
+### 1. Before the predictor change: the old `node_0` clamps on real data (live)
+
+The detector was still running the unchanged predictor (ramp-era `NODE_0_CLAMPS` + freeze). `node_0` was paused for 60 s. At each logged prediction, a separate process read the host with the publisher's own `measure_host()` (`notes/_node0_pause_check.py`), giving n=18 prediction/real pairs:
+
+| Feature | Predicted | Real at the same moment | Mean \|error\| |
+|---|---|---|---:|
+| mem | **45.00, every read** (old clamp ceiling) | 84.5–89.4 % | **42.88** |
+| latency | drifted to **5.00** (old clamp floor) | 8–35 ms | 7.18 |
+| cpu | rose slowly 47.20 → 48.22, then frozen | 28–66 % | 9.58 |
+| conns | 54–60 (inside the old [40,100] clamp by luck) | 59–67 | 5.72 |
+
+The old clamps were the ramp formula's min/max. On real data they produce nonsense, not just imprecision. Replaced with physical bounds only (cpu/mem [0, 100], conns/latency ≥ 0).
+
+### 2. Freeze or decay for `node_0`? Offline backtest on 20 minutes of real samples
+
+**Data.** `notes/_node0_trace_recorder.py` recorded every real `node_0` publish exactly as Ditto stored it (Ditto's own `_modified` timestamp). That gave 235 samples over 1,203 s, with two deliberate all-core CPU bursts (45 s and 30 s) plus whatever else the machine was doing. Publish gap: min 3.9 s, median 4.7 s, max 19.6 s. Observed ranges: cpu 21.8–96.7, mem 85.0–97.4, conns 49–95, latency 7.9–140.2 ms (above the old 120 ceiling).
+
+**Method** (`notes/_node0_policy_backtest.py`):
+- At each of 225 points in the trace, take the last 10 real samples (the detector's `HISTORY_WINDOW`) and pretend the node went silent right there.
+- Predict every *later real sample* up to 240 s ahead — 9,466 comparisons.
+- Every policy uses `twin/predictor.py`'s own `_fit_and_extrapolate()`.
+- The new `predict()` for `node_0` was checked to equal the backtest's `ols_decay` + physical clamps exactly (max |diff| 0 over 936 real-window cases).
+- The noise-node path was checked byte-identical to the previous code (max |diff| 0.0 over 300 random cases).
+
+Mean absolute error vs. the later real sample:
+
+| Feature | Policy | 0–15 s | 15–30 s | 30–60 s | 60–120 s | 120–240 s |
+|---|---|---:|---:|---:|---:|---:|
+| cpu | old code (freeze + ramp clamps) | 13.13 | 16.09 | 19.87 | 23.72 | 23.16 |
+| cpu | freeze, physical clamps | 13.19 | 16.25 | 20.40 | 24.52 | 23.93 |
+| cpu | **decay (now used)** | 13.19 | 16.25 | **19.60** | **17.58** | **15.80** |
+| cpu | *window mean (baseline)* | *10.88* | *11.96* | *13.05* | *14.10* | *15.45* |
+| cpu | *hold last value (baseline)* | *12.57* | *15.01* | *15.54* | *17.31* | *17.85* |
+| mem | old code | 44.96 | 45.07 | 45.07 | 45.10 | 44.91 |
+| mem | freeze, physical clamps | 1.13 | 2.02 | 3.03 | 3.96 | 4.66 |
+| mem | **decay (now used)** | 1.13 | 2.02 | **2.90** | **2.97** | **3.28** |
+| mem | *window mean* | *1.22* | *1.57* | *1.95* | *2.71* | *3.22* |
+| mem | *hold last value* | *0.67* | *1.30* | *1.77* | *2.58* | *3.29* |
+| conns | old code | 3.45 | 5.49 | 8.30 | 11.79 | 14.73 |
+| conns | freeze, physical clamps | 3.53 | 5.93 | 9.43 | 13.06 | 16.25 |
+| conns | **decay (now used)** | 3.53 | 5.93 | **9.02** | **10.33** | **12.20** |
+| conns | *window mean* | *4.03* | *5.40* | *7.30* | *9.66* | *12.06* |
+| conns | *hold last value* | *2.56* | *4.14* | *5.95* | *9.32* | *12.24* |
+| latency | old code | 8.47 | 9.41 | 11.02 | 11.51 | 11.05 |
+| latency | freeze, physical clamps | 8.55 | 9.63 | 11.51 | 12.13 | 11.62 |
+| latency | **decay (now used)** | 8.55 | 9.63 | **11.00** | **8.71** | **7.33** |
+| latency | *window mean* | *7.26* | *7.19* | *7.22* | *7.59* | *7.25* |
+| latency | *hold last value* | *8.86* | *8.44* | *8.65* | *8.86* | *8.71* |
+
+(n per horizon bucket: 585 / 634 / 1,276 / 2,444 / 4,527. 95th-percentile errors are in `_node0_policy_backtest_results.json` and show the same ordering past the cap.)
+
+**What this supports:**
+- **Decay beats freeze on all four features once past the extrapolation cap, and is identical to it before** (same OLS line before the cap, which is one window ≈ 42 s here: 9 gaps × 4.7 s median). At 120–240 s decay cuts the error by 25–37 % (cpu 23.93 → 15.80; mem 4.66 → 3.28; conns 16.25 → 12.20; latency 11.62 → 7.33). This is the measured basis for moving `node_0` onto the decay policy. `_is_structured()`'s freeze branch existed only because the ramp's future was analytically known, and it was removed with the ramp.
+- **The old code was *marginally* better than the new in a few short-horizon cells**: cpu, conns and latency below 30 s (by 0.06–0.44), and conns at 30–60 s (by 0.72). Its narrow ramp clamps happened to cut off a few wild extrapolations. That is not a reason to keep ranges that describe a formula rather than the machine, especially as they cost ~45 points of error on memory at every horizon. It is reported so the comparison isn't one-sided.
+
+**Open finding, recorded, deliberately not acted on:** the linear trend itself does not earn its keep on this real data.
+- A plain **window mean beats the OLS extrapolation for cpu and latency at every horizon**, by up to ~6.5 points on cpu at 30–60 s.
+- **Holding the last value beats it for mem and conns at every horizon up to 120 s** (tied beyond that).
+
+Short-window OLS on bursty, mean-reverting host metrics mostly fits noise. Replacing the predictor's core method for real nodes is a bigger design decision than the freeze-vs-decay question this task asked. It is also resting on one 20-minute session on one machine, and whether prediction stays in this project at all is an open question after the professor's feedback. It is left for Harrison and Prof. Siddiqui to decide.
+
+**`UNCHANGED_TOLERANCE`, answered for this host (not for a Pi 5).** Across 234 consecutive pairs of real `node_0` publishes, **0** were within the ±0.5 / exact-conns band on all four features at once:
+- cpu stayed within ±0.5 in only 2 pairs;
+- mem in 165;
+- conns (exact) in 42;
+- latency in 29.
+
+So on this laptop the band never drops a genuinely new real sample from the predictor's history. Since 2026-09-17 it no longer gates liveness at all. Whether a Pi 5 at thermal equilibrium behaves the same is still open (`HARDWARE_MEASUREMENT_PLAN.md`).
+
+### 3. After the change: live pause/resume on the new code
+
+Detector restarted on the new `twin/predictor.py`. `node_0` was paused for 75 s — long enough to pass the ~42 s cap so the decay actually engages — and compared the same way as in §1 (n=23):
+
+| Feature | Predicted | Real at the same moment | Mean \|error\| | Error range |
+|---|---|---|---:|---|
+| mem | 90.11–90.79 | 87.9–90.6 % | **1.03** | −0.18 … +2.37 |
+| conns | 60.64–60.69 | 54–64 | 1.95 | −3.35 … +6.64 |
+| latency | 13.20–13.66 | 8.6–34.5 ms | 5.87 | −21.21 … +4.66 |
+| cpu | 32.9 → 21.2 → 35.3 | 19.5–61.1 % | 7.16 | −33.32 … +14.74 |
+
+The CPU prediction shows the policy working. It follows the window's downward slope until the cap (~t+43 s), then turns and decays back toward the window mean, instead of freezing at 21.2. The large CPU errors are the machine spiking to 52–61 % mid-pause, which no predictor fed only the pre-silence window could know. The same goes for latency spikes to 29–35 ms.
+
+This table and §1 come from different pause windows, so they are not a controlled A/B. The backtest in §2 is the controlled comparison.
+
+Other results from this run:
+- `node_0` went `FAILED` at 9.5 s and was `CLEARED` 4.0 s after resume.
+- No other `FAILED` event occurred in ~29 minutes of the detector running against real `node_0` data (old and new code combined); the only `FAILED`/`CLEARED` pairs are the two deliberate pauses.
+- Publisher: 0 non-204 responses. Aggregator: 0 non-204 responses. Empty stderr on all three processes.
+
+**No-PATCH invariant, re-confirmed on the new code:**
+- **Code review.** `grep` shows `failure_detector.py`'s only Ditto call is still `ditto("GET", ...)` (line 80), and `predictor.py` still imports only `math`.
+- **Live.** The nginx access log for the 79 s gap between `node_0` PATCHes around this pause (01:06:04–01:07:23 UTC) shows 40 requests for `node_0`, every one a `GET`, and zero `PATCH`/`PUT`/`POST`.

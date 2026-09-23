@@ -52,6 +52,20 @@ Feature JSON shape (OpenTwins / Ditto convention):
 "cpu_utilization": { "properties": { "value": 0.0 } }
 ```
 
+### Where node feature values come from (as of 2026-09-22)
+
+Same four feature names on every node. The source differs by node, and so does the claim each node can support:
+
+| Node | Source of the four features | Classification (Model / Shadow / Twin, by automated data flow) |
+|---|---|---|
+| `node_0` | **Real**, measured on the machine running `twin/publisher.py` each cycle: `psutil.cpu_percent(interval=None)`, `psutil.virtual_memory().percent`, count of ESTABLISHED TCP connections, timed TCP connect to `1.1.1.1:443`. A failed probe is left out of the PATCH, never filled in. | **Digital Shadow node** — real, automated, one-way. Not a Digital Twin: nothing flows back to the machine. |
+| `node_1`–`node_9` | Synthetic `random.uniform` / `random.randint`, unchanged. | **Digital Model** — no physical counterpart. |
+| `rack_*`, `main_cluster` | Aggregated from child nodes (below). `rack_0`/cluster mix `node_0`'s real CPU with synthetic nodes. | Shadow nothing physical. |
+
+The system as a whole is mixed (one real node, nine synthetic) and is not described here as "a digital twin" or "a digital shadow". Until 2026-09-22 `node_0` was a synthetic ramp (CPU `10 + 85·min(1, elapsed/360)`, etc.), so every node was a Digital Model; that formula no longer exists. Per-feature definitions and the demo-day tradeoff: [twin/README.md](../twin/README.md#publisher-details). Why it changed: [DIGITAL_TWIN_ADAPTATION_ANALYSIS.md](DIGITAL_TWIN_ADAPTATION_ANALYSIS.md).
+
+**Not changed, flagged:** `node_0`'s static *attributes* are still the placeholder values `scripts/setup_types_and_twins.py` gives every node (`hardware_model: "generic-1U"`, `install_date: "2026-01-01"`, read live from Ditto 2026-09-22). They do not describe the laptop `node_0` now measures. Only the four features were converted.
+
 ## Twin Types (cycle-free graph)
 
 - `hnguyen.clustertwin:NodeType`
@@ -199,6 +213,13 @@ exists here to fit one against), but deliberately does not match the
 "writes it into the twin" half yet.
 
 **Same-day addendum, 2026-09-16 (after this section was first written):** past the extrapolation cap, recovery is conditional on node category, not uniform. `node_0` (a known deterministic formula, `_is_structured()` in `twin/predictor.py`) stays frozen at the capped value — decaying it toward its own training-window mean was tried and measured worse (error grew unboundedly on a node that's still genuinely trending). Every noise node (`node_1`–`node_9`) decays the frozen value toward the training window's empirical mean instead of sitting at a fixed number indefinitely. See `notes/PREDICTOR_VALIDATION.md`'s later sections for the measured arc behind this branch.
+
+**Addendum, 2026-09-22 — `node_0` is real host telemetry now, so the `node_0` half of the addendum above no longer applies:**
+- **Clamps.** `twin/predictor.py`'s node_0 clamps are physical bounds only: cpu/mem in [0, 100], conns/latency ≥ 0, no upper bound. The old ones (cpu [10,95], mem [25,45], conns [40,100], latency [5,120]) were the synthetic ramp's min/max. Measured live with real data before the change, they pinned predicted memory at 45.00 against a real 84.5–89.4 %.
+- **Policy past the cap.** `node_0` now uses the same decay-toward-mean as every other node. `_is_structured()` and its freeze branch are gone. Freezing was justified by the ramp's analytically known future. Real host metrics have no closed form and measured bursty and mean-reverting, and in a backtest against real `node_0` samples decay beat freeze on all four features past the cap.
+- **How it was checked.** Only against later **real** readings of the machine — never against a formula and never against another prediction. That is an imperfect proxy (same machine measuring itself, different CPU averaging windows, a simulated rather than real failure), not an independent oracle.
+
+Numbers: `PREDICTOR_VALIDATION.md`, 2026-09-22 section.
 
 **Known limitation, found during verification:** on a node with no real trend
 (9 of the 10 nodes are pure `random.uniform` noise with no temporal structure

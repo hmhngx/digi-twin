@@ -93,12 +93,12 @@ def measure_host() -> dict:
     - cpu_utilization: psutil.cpu_percent(interval=None) -- system-wide CPU %
       averaged over the whole time since the previous call, i.e. the full
       publish period (the 3 s sleep plus the cycle's ten sequential Ditto
-      PATCHes -- measured 5-21 s per cycle on this machine, 2026-09-22). Chosen
-      over a short blocking interval (e.g. 0.5 s) for two reasons: a 0.5 s slice
-      would be blind to any burst in the rest of each cycle, and it would stall
-      the publish loop for all ten nodes every cycle. Consequence to know about:
-      after node_0 is paused and resumed, the first reading is the average over
-      the whole pause, not over one cycle.
+      PATCHes -- measured 3.9-21.8 s, median 4.7 s, on this machine
+      2026-09-22). Chosen over a short blocking interval (e.g. 0.5 s) for two
+      reasons: a 0.5 s slice would be blind to any burst in the rest of each
+      cycle, and it would stall the publish loop for all ten nodes every cycle.
+      Consequence to know about: after node_0 is paused and resumed, the first
+      reading is the average over the whole pause, not over one cycle.
     - memory_utilization: psutil.virtual_memory().percent -- (total - available)
       / total, i.e. physical RAM in use.
     - active_connections: system-wide count of TCP connections (IPv4 + IPv6) in
