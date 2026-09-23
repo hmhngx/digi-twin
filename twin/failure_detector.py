@@ -139,8 +139,9 @@ def run(duration: float | None = None) -> None:
                 # a live, healthy node FAILED permanently. Found by code review during
                 # hardware-measurement planning, 2026-09-17, before any real hardware
                 # existed to observe it on; confirmed live both ways: node_0's own
-                # plateau (publisher.py holds cpu/latency/conns exactly constant past
-                # elapsed=360s) spuriously FAILED under the old code, twice, each time
+                # plateau (publisher.py, as it was until 2026-09-22, held cpu/latency/
+                # conns exactly constant past elapsed=360s; node_0 is real host
+                # telemetry now) spuriously FAILED under the old code, twice, each time
                 # mem's continued sine oscillation lingered near a peak or trough long
                 # enough to also stay within tolerance for >9s -- see
                 # notes/PREDICTOR_VALIDATION.md for the real run and timestamps.
