@@ -1,3 +1,5 @@
+**Superseded 2026-09-22 — do not send.** The demo this draft asked for has since happened, and Prof. Siddiqui's feedback on it changed the picture: this draft's "the digital twin's pipeline works" and "validated" framing no longer holds up (see `notes/DIGITAL_TWIN_ADAPTATION_ANALYSIS.md`). The current draft is [`PROFESSOR_UPDATE_2026-09-22_DRAFT.md`](PROFESSOR_UPDATE_2026-09-22_DRAFT.md). Kept unchanged below for the record, because `notes/PURCHASE_CHECKLIST.md` refers to it.
+
 Plain-text draft, ready to paste into an email to Prof. Siddiqui, requesting a demo. Not sent by this session. No hardware has been ordered — this message does not say or imply otherwise.
 
 ---
