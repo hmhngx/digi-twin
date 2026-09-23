@@ -24,6 +24,12 @@ PUBLISH_INTERVAL_SEC = float(os.getenv("PUBLISH_INTERVAL_SEC", "3"))
 AGGREGATE_INTERVAL_SEC = float(os.getenv("AGGREGATE_INTERVAL_SEC", "7"))
 FAILURE_TOLERANCE_SEC = float(os.getenv("FAILURE_TOLERANCE_SEC", "9"))
 HEALTHY_CPU_THRESHOLD = float(os.getenv("HEALTHY_CPU_THRESHOLD", "80"))
+# node_0's latency_ms = real TCP connect RTT from this machine to this endpoint.
+# An IP literal by default so no DNS lookup is ever involved. 1.1.1.1:443 is
+# Cloudflare's anycast resolver (HTTPS port): a stable, always-up public target.
+LATENCY_PROBE_HOST = os.getenv("LATENCY_PROBE_HOST", "1.1.1.1")
+LATENCY_PROBE_PORT = int(os.getenv("LATENCY_PROBE_PORT", "443"))
+LATENCY_PROBE_TIMEOUT_SEC = float(os.getenv("LATENCY_PROBE_TIMEOUT_SEC", "2"))
 
 POLICY_ID = f"{NAMESPACE}:basic_policy"
 NODE_TYPE = f"{NAMESPACE}:NodeType"

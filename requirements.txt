@@ -3,3 +3,4 @@ python-dotenv>=1.0.0
 paho-mqtt>=2.0.0
 influxdb-client>=1.40.0
 matplotlib>=3.8.0
+psutil==7.2.2  # pinned: node_0's real host telemetry in twin/publisher.py
