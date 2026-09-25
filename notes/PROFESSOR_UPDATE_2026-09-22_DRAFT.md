@@ -1,6 +1,6 @@
 Plain-text draft for Prof. Siddiqui, written 2026-09-22 after her feedback on the live demo. **Not sent by this session.** No hardware has been ordered, and this message does not say or imply that one is coming or that funding has been discussed (see `notes/PURCHASE_CHECKLIST.md` — still "no order placed"). Copy only the part between the separators.
 
-**Before sending:** the email points her at `notes/DIGITAL_TWIN_ADAPTATION_ANALYSIS.md`. As of this draft that file is **untracked** (not committed, not pushed), so it won't be on GitHub unless it is committed and pushed first.
+**Before sending:** the email points her at `notes/DIGITAL_TWIN_ADAPTATION_ANALYSIS.md`. That file is now committed (`8026f34`, 2026-09-25) but **not yet pushed**, so it won't be on GitHub unless it is pushed first.
 
 ---
 
