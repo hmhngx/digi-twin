@@ -19,7 +19,9 @@ What has not changed:
 - Nothing flows back from the twin to the laptop, so even the real node is a digital shadow at most, not a digital twin.
 - I haven't ordered any hardware.
 
-Before I put more time into this, could I get your read on whether this is the right direction? In particular: is one real node like this the kind of correction you had in mind, or would you rather I narrow the system down to fewer parts that are all real? And how important is the two-way part — the twin acting back on the physical side — for what you want this project to show?
+Before I put more time into this, I want to ask you directly rather than guess: what should this twin actually be used for? Is there a specific decision, person, or downstream system it should serve — even a modest one, like the fan-controller idea from before hardware got deferred — or is demonstrating the architecture itself the goal for this semester? Right now nothing reads the twin's state and does anything differently because of it, real node or not, and I don't want to keep building on top of that without knowing what it's supposed to be for.
+
+Separately: is one real node like this the kind of correction you had in mind, or would you rather I narrow the system down to fewer parts that are all real? And how important is the two-way part — the twin acting back on the physical side — for what you want this project to show?
 
 Harrison
 
