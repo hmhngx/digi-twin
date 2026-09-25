@@ -66,7 +66,7 @@ Short names get prefix `hnguyen.clustertwin:`. Pause/resume only write the JSON 
 
 State dump: `notes/_failure_state.json` (gitignored).
 
-If publisher is stopped, the detector will `FAILED` every node after the tolerance window. That is expected.
+The detector cannot tell whether the publisher is running: it reads only Ditto and `notes/_paused_nodes.json`. A node is marked `FAILED` only through that pause file. Once a node is listed there (the `--pause` path), its polls stop resetting the liveness timer, and it fails when the timer passes the tolerance window. For a node that is not listed, every successful `GET` of its Thing resets the timer, even if the value in Ditto has not changed. So if the publisher stops, or stops writing one node, and that node was never paused, the detector never marks it `FAILED`: Ditto keeps serving the last value and the `GET` keeps succeeding. A `GET` that returns an HTTP error does not count toward `FAILED` either; it prints `WARN` and skips that node for that poll. This was observed for one node on 2026-09-23 ([notes/LIVE_SYSTEM_BEHAVIOR_RECORD_2026-09-23.md](../notes/LIVE_SYSTEM_BEHAVIOR_RECORD_2026-09-23.md) §4.3). Stopping the whole publisher was not run live, but the code gives the same result, because whether the `GET` succeeds does not depend on the publisher running.
 
 ## Out of scope (same as root README)
 
