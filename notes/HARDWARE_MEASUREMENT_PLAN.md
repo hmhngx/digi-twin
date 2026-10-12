@@ -1,3 +1,7 @@
+> **Superseded on 2026-10-11.** This document predates the 2026-10-01 call and assumed a Raspberry Pi 5 (not yet bought) sending its PATCHes straight to Ditto through the laptop's port-forward.
+> The board in use is now a borrowed Raspberry Pi 3 B+, the architecture is Pi -> laptop receiver -> Ditto, and the current plan is `notes/PI_TELEMETRY_SPEC_2026-10-11.md`.
+> The text below is kept unchanged for history.
+
 # Hardware Measurement Plan — the Two Open Carry-Forward Questions
 
 **Written:** 2026-09-17, before any hardware exists, specifically so no design work is needed the moment it arrives. Both scripts referenced below are already written and committed (`notes/pi_rtt_measurement.py`, `notes/pi_idle_jitter_measurement.py`) — this document says how to run them and what result means what. Nothing here has been executed; there is no real Pi 5 yet.

@@ -1,3 +1,7 @@
+> **Superseded on 2026-10-11.** This document predates the 2026-10-01 call and assumed buying a Raspberry Pi 5 kit (board, Active Cooler, 27W power supply, microSD card).
+> The board in use is now a borrowed Raspberry Pi 3 B+, the architecture is Pi -> laptop receiver -> Ditto, and the current plan is `notes/PI_TELEMETRY_SPEC_2026-10-11.md`.
+> The text below is kept unchanged for history.
+
 # Purchase Checklist — Raspberry Pi 5 Hardware
 
 **NO ORDER HAS BEEN PLACED. Do not order until Prof. Siddiqui has seen the demo and explicitly approved funding. This document is preparation only.**
