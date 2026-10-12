@@ -1,3 +1,5 @@
+> **2026-10-11 — partially superseded by `notes/PI_TELEMETRY_SPEC_2026-10-11.md`.** The transport, silence-detection, Type and file-name questions below are now decided there, and §14 of that spec lists four corrections to this note (the board is a Pi 3 B+, not a Pi 5; the "emits 0.0" and "no slot" wording; `patch_node` cannot be imported from `twin.publisher`). The text below is left as written on 2026-10-04.
+
 # Pi sync design — 2026-10-04
 
 Design only: no code written, nothing run, no Pi exists. Basis: the 2026-10-01 call as relayed by Harrison (no transcript in the repo). Deliberately departs from `pi_rtt_measurement.py` and `HARDWARE_MEASUREMENT_PLAN.md` (a): the Pi never talks to Ditto.
