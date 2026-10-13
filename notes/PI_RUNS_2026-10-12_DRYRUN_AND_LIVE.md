@@ -140,9 +140,9 @@ Verified by these two runs:
 
 ## 7. Defects and proposals
 
-### 7.1 NTP-ordering artifact: age at send fixed in this change, not yet re-run on the Pi; CPU and frequency side effect still open
+### 7.1 NTP-ordering artifact and its CPU side effect: implemented in 7817f4a, its tests green on Windows and Linux, not validated on the Pi
 
-`Sender.cycle()` called `NtpProbe.get()` between sampling and stamping `sent_at`. That kept `timedatectl` out of the network figure but aged the measurements by its run time on every cycle where the 60 s refresh fell due (§3.2: 42 of 854 live messages, 258–349 ms; §3.3: 19 of 384 dry-run messages, 248–342 ms). The check now runs once before the first cycle and after each cycle's send and any due probe; `cycle()` only reads the cached value. Details and tests: spec §4.3, `NtpPlacementTests` in `tests/test_pi_sender.py`.
+`Sender.cycle()` called `NtpProbe.get()` between sampling and stamping `sent_at`. That kept `timedatectl` out of the network figure but aged the measurements by its run time on every cycle where the 60 s refresh fell due (§3.2: 42 of 854 live messages, 258–349 ms; §3.3: 19 of 384 dry-run messages, 248–342 ms). Commit 38fcc35 moved the check out of `cycle()`: it runs once before the first cycle and after each cycle's send and any due probe, and `cycle()` only reads the cached value. Commit 7817f4a changes what the check does: `NtpProbe` now reads the kernel clock state with one read-only `adjtimex` call (no subprocess), and `timedatectl` runs only as a cross-check, once before the first cycle's CPU baseline read and once after the last send, printing one `ntp check` line each to stderr. Details and tests: spec §4.3, `tests/test_pi_sender.py` and `tests/test_pi_kernel_clock.py`.
 
 **Related observation, live run [recomputed].** Here "followed by" means the **next message**: for an artifact message with sequence number n, message n+1. The `timedatectl` run happens in the cycle of message n, after its measurements were read, so message n+1 holds the first measurements taken after it, and its CPU averaging window is the 3 s that contains the run. All 42 artifact messages have a next message.
 
@@ -150,13 +150,21 @@ Verified by these two runs:
 - **CPU utilisation.** Of the 853 values (the first message has none), 45 are above 1.0 %. Forty-two of the 45 are in a next message (seq 1, which follows the artifact at seq 0, is one of the 42), and 3 are elsewhere (seq 27: 1.93, seq 106: 1.35, seq 706: 1.43 %). The 42 next-message values have min 2.34, median 2.85, max 3.18 %. All other values (n = 811) have median 0.08, p95 0.50, p99 0.67, max 1.93 %. The two groups do not overlap (1.93 < 2.34).
 - **The clock probe does not explain it.** A probe is taken after a send once a minute too, and its work falls in the window of the message that carries it. The probe-carrying messages and the next messages coincide in only 5 messages (seq 21, 41, 61, 641, 661). The 38 probe-carrying messages that are not next messages (seq 0 is one and has no CPU value; the other 37 do) show CPU min 0.0, median 0.17, max 0.67 %, and 1400000 kHz in 1 of the 38. The 37 next messages that carry no probe show CPU min 2.34, median 2.85, max 3.18 % and 1400000 kHz in 37 of 37.
 
-So the once-a-minute `timedatectl` run is visible in the Pi's CPU and frequency series. The run's own CPU use was not isolated by an experiment (for example a run with the check disabled), and the governor was not read.
+So, in the live run (before this change), the once-a-minute `timedatectl` run is visible in the Pi's CPU and frequency series. The run's own CPU use was not isolated by an experiment (for example a run with the check disabled), and the governor was not read.
 
-**Open defect: this change does not remove it.** The CPU averaging windows are contiguous 3000 ms intervals between consecutive `/proc/stat` reads (§3.4 for the live run; `Sampler._cpu` keeps each good read as the next baseline). The `timedatectl` run still happens once a minute and follows message n's read in the old order and in the new one (now after the send and inside the idle time), so it falls into the window of message n+1 in both. This is derived from the code; it has not been measured on the Pi after the fix, and neither has the size of the effect after the fix. The CPU and frequency series are therefore expected to keep a bump every 60–63 s that comes from the measurement itself: 42 of 853 CPU values (4.9 %) at 2.34–3.18 % against a median of 0.08 % (live run, old order). Options, all **unverified** and none implemented:
+**Status: implemented in 7817f4a, tests green on Windows and Linux, not validated on the Pi.** Moving the check out of `cycle()` (38fcc35) alone did not remove the CPU cost: the CPU averaging windows are contiguous 3000 ms intervals between consecutive `/proc/stat` reads (§3.4 for the live run; `Sampler._cpu` keeps each good read as the next baseline), and the `timedatectl` run followed message n's read in the old order and in the 38fcc35 order, so it fell into the window of message n+1 in both. Commit 7817f4a takes the subprocess out of the loop: the refresh is one `adjtimex` system call, and `timedatectl` runs only before the first CPU baseline read and after the last send, so by the order of the code it falls in no reported CPU window. The bump every 60–63 s that comes from the measurement itself (42 of 853 CPU values (4.9 %) at 2.34–3.18 % against a median of 0.08 % (live run, old order)) is therefore expected to be gone. That has not been measured on the Pi, and neither has the cost of the `adjtimex` call.
 
-1. Read the kernel's clock-sync state directly with `adjtimex` instead of running `timedatectl`, after validating on the Pi that it agrees with `timedatectl`. Whether the standard library offers a usable call on Python 3.9 to 3.13 has not been checked.
-2. Refresh every 300 s instead of 60 s. That would cut the number of affected messages by a factor of five and leave the flag up to 300 s old.
-3. Check only at the start and the end of a run. That leaves the flag unknown for the part in between.
+The flag now reproduces systemd's `ntp_synced()`, which is what `timedatectl` prints as "System clock synchronized" (source read at v257): `adjtimex()` returned a non-negative value and `maxerror` is under 16 s, with `STA_UNSYNC` ignored as in systemd. Unreadable gives `null`. It is a coarse sanity flag, not a clock-quality measure.
+
+The tests for this change are green on Windows (the whole suite: 282 tests, 2 skipped, the two Linux-only tests) and on Linux (WSL, x86_64, Python 3.14.4, where the real `adjtimex` call and the real struct layout are exercised); on that Linux one unrelated test in `tests/test_pi_protocol.py` fails and was not investigated.
+
+**Unverified on the Pi:** the aarch64 struct layout (checked with gcc and glibc on x86_64 only); permission to call `adjtimex` read-only as a non-root user; agreement with `timedatectl`; the actual CPU cost of the refresh and of the two `timedatectl` calls; the Pi's systemd version.
+
+Options that were considered before the change, all **unverified**:
+
+1. Read the kernel's clock-sync state directly with `adjtimex` instead of running `timedatectl`: implemented in 7817f4a through `ctypes` (`CDLL(None)`); whether the standard library has a ready-made call on Python 3.9 to 3.13 was not checked. Validating on the Pi that it agrees with `timedatectl` is still to do (§8).
+2. Refresh every 300 s instead of 60 s: not implemented.
+3. Check only at the start and the end of a run: not implemented as a replacement; the start and end checks exist as a cross-check only.
 
 ### 7.2 Probe lost when a send fails: by design, reported, not changed
 
@@ -172,7 +180,7 @@ The analyzer pairs each sample with the minimum-delay probe within ±300 s. With
 
 ## 8. Next steps
 
-1. Re-run a measurement run with the fixed sender on the Pi and check that age at send is 1–2 ms on every message, and measure the size of the bump on the message after each `timedatectl` run (the live run before the fix: 1400000 kHz in 42 of 42, CPU 2.34–3.18 %).
+1. Re-run a measurement run with the sender from 7817f4a on the Pi and check that age at send is 1–2 ms on every message; that the start and end `ntp check` lines agree with each other, and on each line the `adjtimex` verdict with the `timedatectl` answer; and that the bump on the message after a former `timedatectl` run is gone, by measuring its size (the live run before this change: 1400000 kHz in 42 of 42, CPU 2.34–3.18 %).
 2. Add a controlled CPU load and an independent reference reading, so accuracy can be measured.
 3. Check that `pi_0` events reach InfluxDB (re-create the Ditto-to-Mosquitto connection first).
 4. Ask Prof. Siddiqui about power measurement.
