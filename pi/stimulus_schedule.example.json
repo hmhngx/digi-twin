@@ -1,0 +1,207 @@
+{
+ "phases": [
+  {
+   "name": "idle_start",
+   "kind": "idle",
+   "level": 0,
+   "duration_s": 300,
+   "fixed": true
+  },
+  {
+   "name": "cpu25_r1",
+   "kind": "cpu",
+   "level": 25,
+   "duration_s": 90,
+   "group": "cpu25_r1"
+  },
+  {
+   "name": "rest_cpu25_r1",
+   "kind": "idle",
+   "level": 0,
+   "duration_s": 30,
+   "group": "cpu25_r1"
+  },
+  {
+   "name": "cpu50_r1",
+   "kind": "cpu",
+   "level": 50,
+   "duration_s": 90,
+   "group": "cpu50_r1"
+  },
+  {
+   "name": "rest_cpu50_r1",
+   "kind": "idle",
+   "level": 0,
+   "duration_s": 30,
+   "group": "cpu50_r1"
+  },
+  {
+   "name": "cpu75_r1",
+   "kind": "cpu",
+   "level": 75,
+   "duration_s": 90,
+   "group": "cpu75_r1"
+  },
+  {
+   "name": "rest_cpu75_r1",
+   "kind": "idle",
+   "level": 0,
+   "duration_s": 30,
+   "group": "cpu75_r1"
+  },
+  {
+   "name": "cpu100_r1",
+   "kind": "cpu",
+   "level": 100,
+   "duration_s": 90,
+   "group": "cpu100_r1"
+  },
+  {
+   "name": "rest_cpu100_r1",
+   "kind": "idle",
+   "level": 0,
+   "duration_s": 30,
+   "group": "cpu100_r1"
+  },
+  {
+   "name": "mem100_r1",
+   "kind": "mem",
+   "level": 100,
+   "duration_s": 90,
+   "group": "mem100_r1"
+  },
+  {
+   "name": "rest_mem100_r1",
+   "kind": "idle",
+   "level": 0,
+   "duration_s": 30,
+   "group": "mem100_r1"
+  },
+  {
+   "name": "mem200_r1",
+   "kind": "mem",
+   "level": 200,
+   "duration_s": 90,
+   "group": "mem200_r1"
+  },
+  {
+   "name": "rest_mem200_r1",
+   "kind": "idle",
+   "level": 0,
+   "duration_s": 30,
+   "group": "mem200_r1"
+  },
+  {
+   "name": "mem300_r1",
+   "kind": "mem",
+   "level": 300,
+   "duration_s": 90,
+   "group": "mem300_r1"
+  },
+  {
+   "name": "rest_mem300_r1",
+   "kind": "idle",
+   "level": 0,
+   "duration_s": 30,
+   "group": "mem300_r1"
+  },
+  {
+   "name": "cpu25_r2",
+   "kind": "cpu",
+   "level": 25,
+   "duration_s": 90,
+   "group": "cpu25_r2"
+  },
+  {
+   "name": "rest_cpu25_r2",
+   "kind": "idle",
+   "level": 0,
+   "duration_s": 30,
+   "group": "cpu25_r2"
+  },
+  {
+   "name": "cpu50_r2",
+   "kind": "cpu",
+   "level": 50,
+   "duration_s": 90,
+   "group": "cpu50_r2"
+  },
+  {
+   "name": "rest_cpu50_r2",
+   "kind": "idle",
+   "level": 0,
+   "duration_s": 30,
+   "group": "cpu50_r2"
+  },
+  {
+   "name": "cpu75_r2",
+   "kind": "cpu",
+   "level": 75,
+   "duration_s": 90,
+   "group": "cpu75_r2"
+  },
+  {
+   "name": "rest_cpu75_r2",
+   "kind": "idle",
+   "level": 0,
+   "duration_s": 30,
+   "group": "cpu75_r2"
+  },
+  {
+   "name": "cpu100_r2",
+   "kind": "cpu",
+   "level": 100,
+   "duration_s": 90,
+   "group": "cpu100_r2"
+  },
+  {
+   "name": "rest_cpu100_r2",
+   "kind": "idle",
+   "level": 0,
+   "duration_s": 30,
+   "group": "cpu100_r2"
+  },
+  {
+   "name": "mem100_r2",
+   "kind": "mem",
+   "level": 100,
+   "duration_s": 90,
+   "group": "mem100_r2"
+  },
+  {
+   "name": "rest_mem100_r2",
+   "kind": "idle",
+   "level": 0,
+   "duration_s": 30,
+   "group": "mem100_r2"
+  },
+  {
+   "name": "mem200_r2",
+   "kind": "mem",
+   "level": 200,
+   "duration_s": 90,
+   "group": "mem200_r2"
+  },
+  {
+   "name": "rest_mem200_r2",
+   "kind": "idle",
+   "level": 0,
+   "duration_s": 30,
+   "group": "mem200_r2"
+  },
+  {
+   "name": "mem300_r2",
+   "kind": "mem",
+   "level": 300,
+   "duration_s": 90,
+   "group": "mem300_r2"
+  },
+  {
+   "name": "rest_mem300_r2",
+   "kind": "idle",
+   "level": 0,
+   "duration_s": 30,
+   "group": "mem300_r2"
+  }
+ ]
+}
