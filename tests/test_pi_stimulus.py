@@ -541,6 +541,47 @@ class ExampleScheduleTests(unittest.TestCase):
             self.assertEqual(sorted(names), sorted(p.name for p in plan))
 
 
+class ShakedownScheduleTests(unittest.TestCase):
+    """pi/stimulus_schedule.shakedown.json is the 90-second check that the stimulus runs on the Pi (session 1).
+    It is not a measurement schedule: its phases are too short for a steady state."""
+
+    PATH = SCRIPT.parent / "stimulus_schedule.shakedown.json"
+
+    def test_it_is_the_ninety_second_shakedown(self):
+        plan = M.load_schedule(self.PATH)
+        M.check_total(plan, None)
+        self.assertEqual([(p.name, p.kind, p.level, p.duration_s, p.group, p.fixed) for p in plan], [
+            ("idle_start", "idle", 0, 30, None, True),
+            ("cpu50", "cpu", 50, 20, "cpu50", False),
+            ("rest_cpu50", "idle", 0, 10, "cpu50", False),
+            ("mem100", "mem", 100, 20, "mem100", False),
+            ("rest_mem100", "idle", 0, 10, "mem100", False),
+        ])
+        self.assertEqual(M.total_duration(plan), 90)
+
+    def test_it_has_the_format_and_keys_of_the_example_schedule(self):
+        raw = json.loads(self.PATH.read_text(encoding="utf-8"))
+        example = json.loads(ExampleScheduleTests.PATH.read_text(encoding="utf-8"))
+        self.assertEqual(list(raw), list(example))  # the one top-level key, "phases"
+        # fixed and group appear, as the example uses them
+        self.assertEqual({k for p in raw["phases"] for k in p}, {k for p in example["phases"] for k in p})
+
+    def test_after_any_seed_the_idle_start_is_first_and_every_activity_is_followed_by_its_own_rest(self):
+        plan = M.load_schedule(self.PATH)
+        for seed in (1, 2, 3, 2026):
+            names = [p.name for p in M.order_phases(plan, seed)]
+            self.assertEqual(names[0], "idle_start")
+            for activity in ("cpu50", "mem100"):
+                self.assertEqual(names[names.index(activity) + 1], "rest_" + activity)
+            self.assertEqual(sorted(names), sorted(p.name for p in plan))
+
+    def test_print_plan_parses_it_and_prints_a_total_of_90_s(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(M.main(["--schedule", str(self.PATH), "--print-plan"], env=FakeWorld().env()), 0)
+        self.assertIn("total 90 s", out.getvalue())
+
+
 class PinReportTests(unittest.TestCase):
     def test_it_waits_until_every_worker_has_reported_its_core(self):
         reads = iter([[-2, -2], [0, -2], [0, 1]])

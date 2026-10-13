@@ -1,0 +1,39 @@
+{
+ "phases": [
+  {
+   "name": "idle_start",
+   "kind": "idle",
+   "level": 0,
+   "duration_s": 30,
+   "fixed": true
+  },
+  {
+   "name": "cpu50",
+   "kind": "cpu",
+   "level": 50,
+   "duration_s": 20,
+   "group": "cpu50"
+  },
+  {
+   "name": "rest_cpu50",
+   "kind": "idle",
+   "level": 0,
+   "duration_s": 10,
+   "group": "cpu50"
+  },
+  {
+   "name": "mem100",
+   "kind": "mem",
+   "level": 100,
+   "duration_s": 20,
+   "group": "mem100"
+  },
+  {
+   "name": "rest_mem100",
+   "kind": "idle",
+   "level": 0,
+   "duration_s": 10,
+   "group": "mem100"
+  }
+ ]
+}
