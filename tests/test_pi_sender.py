@@ -299,6 +299,104 @@ def telemetry_posts(link):
     return [obj for path, obj in link.posts if path == pp.TELEMETRY_PATH]
 
 
+class CountingStatFiles(FakeFiles):
+    """FakeFiles whose /proc/stat advances on every read, so CPU is present from the second cycle on."""
+
+    def __init__(self):
+        super().__init__()
+        self.stat_reads = 0
+
+    def __call__(self, path):
+        if path == ps.PROC_STAT:
+            self.stat_reads += 1
+            n = self.stat_reads
+            return "cpu  %d 0 %d %d 0 0 0 0 0 0\n" % (100 * n, 50 * n, 1000 * n)
+        return super().__call__(path)
+
+
+class RecordingLink(FakeLink):
+    """FakeLink that also notes each request in a shared event list; `on_post` lets a request take Pi time."""
+
+    def __init__(self, events, on_post=None):
+        super().__init__()
+        self.events = events
+        self.on_post = on_post
+
+    def post(self, path, obj):
+        self.events.append("post")
+        if self.on_post is not None:
+            self.on_post()
+        return super().post(path, obj)
+
+    def probe(self, clock_ms):
+        self.events.append("probe")
+        return super().probe(clock_ms)
+
+
+class NtpRig:
+    """A Pi whose clocks the test controls. The wall clock (epoch ms) and the monotonic clock (s) move
+    together: every wall-clock read costs 1 ms; sleep() and a `timedatectl` run advance both. The runner
+    stands in for `timedatectl`: it costs `ntp_cost_ms` of Pi time, and each run is recorded as a
+    (start, end) window on the Pi wall clock. `answers` is what successive runs print: "yes", "no", or
+    None for a run that fails."""
+
+    def __init__(self, answers=("yes",), ntp_cost_ms=330):
+        self.wall = 1_000_000
+        self.mono = 1000.0
+        self.answers = list(answers)
+        self.ntp_cost_ms = ntp_cost_ms
+        self.events = []          # "ntp" / "sample" / "post" / "probe", in the order they happened
+        self.cycle_starts = []    # monotonic time at which each sampling cycle began
+        self.ntp_windows = []     # (start, end) of every timedatectl run
+        self.sleeps = []
+        self.runs = 0
+
+    def clock(self):
+        self.wall += 1
+        return self.wall
+
+    def monotonic(self):
+        return self.mono
+
+    def advance(self, seconds):
+        self.mono += seconds
+        self.wall += int(round(seconds * 1000.0))
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.advance(seconds)
+
+    def timedatectl(self):
+        start = self.wall
+        self.events.append("ntp")
+        self.runs += 1
+        self.advance(self.ntp_cost_ms / 1000.0)
+        self.ntp_windows.append((start, self.wall))
+        answer = self.answers[min(self.runs, len(self.answers)) - 1]
+        if answer is None:
+            raise OSError("timedatectl: not found")
+        return "System clock synchronized: %s\n" % answer
+
+    def build(self, interval=25.0, burst=0, probe_every=1e9):
+        self.link = RecordingLink(self.events, on_post=lambda: self.advance(0.005))  # a request takes 5 ms
+        sampler = ps.Sampler(read=CountingStatFiles(), clock_ms=self.clock, warn=lambda m: None,
+                             monotonic=self.monotonic)
+        real_sample = sampler.sample
+
+        def sample():
+            self.events.append("sample")
+            self.cycle_starts.append(self.mono)
+            return real_sample()
+
+        sampler.sample = sample
+        return ps.Sender(
+            link=self.link, sampler=sampler, ntp=ps.NtpProbe(runner=self.timedatectl, monotonic=self.monotonic),
+            clock_ms=self.clock, sleep=self.sleep, monotonic=self.monotonic, session_id="0123456789abcdef",
+            interval=interval, probe_burst=burst, probe_every=probe_every,
+            warn=lambda m: None, say=lambda line: None,
+        )
+
+
 class SenderLoopTests(unittest.TestCase):
     def test_sequence_increments_per_cycle_even_when_the_send_fails(self):
         link = FakeLink(script=[ConnectionRefusedError("down"), (500, None)])
@@ -355,27 +453,118 @@ class SenderLoopTests(unittest.TestCase):
             sender.run(count=5)
         self.assertEqual(len(telemetry_posts(link)), 1)
 
-    def test_sent_at_is_stamped_after_the_ntp_check_so_its_run_time_is_not_counted_as_network_latency(self):
+    def test_ntp_run_time_is_not_counted_as_network_latency(self):
+        # Adapted 2026-10-13 (it used to assert that sent_at is stamped after the NTP check). The check no
+        # longer runs inside cycle(), so no run may fall between the sent_at stamp and the request.
         clock = stepping_clock(1_000_000, step=1)
-        finished = {}
+        windows = []
+        posted_at = []
 
         class SlowNtp:
             def get(inner):
+                start = clock()
                 for _ in range(800):  # `timedatectl` takes 800 ms of Pi time
                     clock()
-                finished["at"] = clock()
+                windows.append((start, clock()))
                 return True
 
-        link = FakeLink()
+        class TimedLink(FakeLink):
+            def post(inner, path, obj):
+                posted_at.append(clock())  # the instant the request starts, on the Pi clock
+                return super().post(path, obj)
+
+        link = TimedLink()
         sender, _, _ = make_sender(link, ntp=SlowNtp(), clock=clock)
-        sender.run(count=1)
-        self.assertGreater(telemetry_posts(link)[0]["sent_at_ms"], finished["at"])
+        sender.run(count=3)
+        posts = telemetry_posts(link)
+        self.assertEqual(len(posts), 3)
+        self.assertGreaterEqual(len(windows), 2)  # the check really ran, between the cycles as well
+        for message, request in zip(posts, posted_at):
+            for start, end in windows:
+                self.assertFalse(start <= request and end >= message["sent_at_ms"],
+                                 "a timedatectl run %r overlaps [sent_at %d, request %d]" % ((start, end), message["sent_at_ms"], request))
 
     def test_http_200_with_an_unreadable_body_still_counts_as_sent(self):
         link = FakeLink(script=[(200, "not a dict"), (200, None)])
         sender, _, _ = make_sender(link)
         sender.run(count=2)
         self.assertEqual(sender.stats["ok"], 2)  # HTTP 200 is success; the body is informational
+
+
+class NtpPlacementTests(unittest.TestCase):
+    """Where `timedatectl` runs. In the live run of 2026-10-13 it ran between sampling and sending, so 42 of
+    854 messages were sent 258-349 ms after their measurements were read (every other message: 1-2 ms).
+    These tests use a 25 s interval so that a 60 s refresh falls due within five cycles: cycle starts are
+    at t = 0, 25, 50, 75, 100 s and the refresh is due at the end of the cycle at t = 75 s."""
+
+    def test_no_message_is_sent_later_than_a_few_ms_after_its_first_measurement_read(self):
+        rig = NtpRig(answers=("yes", "no"))
+        rig.build().run(count=5)
+        posts = telemetry_posts(rig.link)
+        self.assertEqual(len(posts), 5)
+        self.assertEqual(rig.runs, 2)  # the startup check and exactly one refresh (NTP_REFRESH_SEC), not one per cycle
+        for post in posts:
+            earliest = min(m["measured_at_ms"] for m in post["measurements"].values())
+            self.assertLessEqual(post["sent_at_ms"] - earliest, 10,
+                                 "seq %d was sent %d ms after its first measurement" % (post["seq"], post["sent_at_ms"] - earliest))
+            for start, end in rig.ntp_windows:
+                self.assertFalse(start <= post["sent_at_ms"] and end >= earliest,
+                                 "a timedatectl run %r overlaps [first measurement %d, sent_at %d]" % ((start, end), earliest, post["sent_at_ms"]))
+
+    def test_the_sampling_grid_does_not_move_when_the_refresh_runs(self):
+        rig = NtpRig(answers=("yes", "no"))
+        rig.build().run(count=5)
+        gaps = [b - a for a, b in zip(rig.cycle_starts, rig.cycle_starts[1:])]
+        self.assertEqual(len(gaps), 4)
+        for gap in gaps:
+            self.assertAlmostEqual(gap, 25.0, places=6)
+
+    def test_order_is_startup_check_then_sample_and_send_with_the_refresh_after_send_and_probe(self):
+        rig = NtpRig(answers=("yes", "no"))
+        rig.build(probe_every=75.0).run(count=5)  # a probe falls due at the same moment as the refresh
+        self.assertEqual(
+            rig.events,
+            ["ntp"] + ["sample", "post"] * 3 + ["sample", "post", "probe", "ntp"] + ["sample", "post"],
+        )
+
+    def test_the_first_message_carries_the_startup_check_and_a_count_of_one_runs_it_once(self):
+        rig = NtpRig(answers=("no",))
+        rig.build().run(count=1)
+        self.assertEqual(rig.events, ["ntp", "sample", "post"])  # checked before the first sample, nothing after the send
+        self.assertIs(telemetry_posts(rig.link)[0]["ntp_synchronized"], False)
+
+    def test_a_later_refresh_updates_the_flag_from_the_next_message_on(self):
+        rig = NtpRig(answers=("yes", "no"))
+        rig.build().run(count=5)
+        self.assertEqual([m["ntp_synchronized"] for m in telemetry_posts(rig.link)], [True, True, True, True, False])
+
+    def test_a_refresh_due_after_the_last_cycle_still_runs_so_a_later_run_call_starts_fresh(self):
+        rig = NtpRig(answers=("yes", "no"))
+        sender = rig.build()
+        sender.run(count=4)  # cycles at t = 0, 25, 50, 75 s: the refresh falls due at the end of the fourth
+        self.assertEqual(rig.events[-1], "ntp")  # it runs before run() returns (this delays the return by its run time)
+        rig.advance(100.0)  # the caller idles; nothing refreshes the flag in the meantime
+        sender.run(count=1)
+        self.assertEqual([m["ntp_synchronized"] for m in telemetry_posts(rig.link)], [True, True, True, True, False])
+
+    def test_unknown_stays_unknown_and_is_retried_only_when_the_refresh_falls_due(self):
+        rig = NtpRig(answers=(None, "yes"))
+        rig.build().run(count=5)
+        self.assertEqual([m["ntp_synchronized"] for m in telemetry_posts(rig.link)], [None, None, None, None, True])
+        self.assertEqual(rig.runs, 2)
+
+    def test_a_refresh_that_overruns_the_idle_slack_triggers_no_catch_up_burst(self):
+        rig = NtpRig(answers=("yes", "no"), ntp_cost_ms=2500)  # a 1 s interval cannot absorb a 2.5 s refresh
+        rig.build(interval=1.0).run(count=70)
+        starts = rig.cycle_starts
+        gaps = [b - a for a, b in zip(starts, starts[1:])]
+        self.assertEqual(len(starts), 70)
+        self.assertEqual(rig.runs, 2)
+        self.assertTrue(all(s > 0 for s in rig.sleeps))  # never a zero or negative sleep
+        self.assertTrue(all(g >= 1.0 - 1e-6 for g in gaps), "two cycles closer than the interval: a catch-up burst")
+        long_gaps = [g for g in gaps if g > 1.0 + 1e-6]
+        self.assertEqual(len(long_gaps), 1)
+        self.assertAlmostEqual(long_gaps[0], 2.505, places=6)  # 5 ms request + 2.5 s refresh, then the next cycle starts at once; the grid resumes after it
 
 
 class ProbeScheduleTests(unittest.TestCase):

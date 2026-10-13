@@ -270,6 +270,7 @@ class Sender:
         self.warn = warn
         self.say = say
         self.seq = 0
+        self.ntp_synchronized: Optional[bool] = None  # last result of self.ntp.get(); None = not checked or unknown
         self.pending: List[Dict[str, int]] = []
         self.stats = {"ok": 0, "failed": 0}
         self._started = False
@@ -300,16 +301,21 @@ class Sender:
             self.pending.append(probe)
             del self.pending[: max(0, len(self.pending) - pp.MAX_PROBES)]
 
+    def _refresh_ntp(self) -> None:
+        """May run `timedatectl` (up to 3 s; NtpProbe runs it at most every NTP_REFRESH_SEC). Called only
+        from run(), outside cycle(): between the first measurement read and the request it would age every
+        measurement of that message by its run time (258-349 ms measured on the Pi 3 B+, 2026-10-13)."""
+        self.ntp_synchronized = self.ntp.get()
+
     # -- one sample cycle ----------------------------------------------------
     def cycle(self) -> None:
         measurements = self.sampler.sample()
-        ntp = self.ntp.get()  # may run `timedatectl` (up to 3 s): done BEFORE sent_at is stamped
         probes, self.pending = self.pending[-pp.MAX_PROBES:], []  # cleared after every attempt
         message = {
             "v": pp.PROTOCOL_VERSION,
             "session_id": self.session_id,
             "seq": self.seq,
-            "ntp_synchronized": ntp,
+            "ntp_synchronized": self.ntp_synchronized,  # the cached value: never refreshed inside a cycle
             "measurements": measurements,
             "probes": probes,
         }
@@ -344,6 +350,7 @@ class Sender:
     def run(self, count: Optional[int] = None) -> None:
         if not self._started:
             self._started = True
+            self._refresh_ntp()  # so the first message carries a real value; before the grid starts, so it cannot make a cycle late
             for i in range(self.probe_burst):
                 if i:
                     self.sleep(PROBE_GAP_SEC)
@@ -358,6 +365,7 @@ class Sender:
             if self.monotonic() >= self._next_probe:
                 self._probe_into_pending()
                 self._next_probe = max(self._next_probe + self.probe_every, self.monotonic())
+            self._refresh_ntp()  # after the send and any probe, inside the idle slack; usually a cache hit
             if count is not None and done >= count:
                 break
             self._next_cycle += self.interval

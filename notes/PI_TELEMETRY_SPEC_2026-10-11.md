@@ -5,6 +5,7 @@ Partly supersedes `notes/PI_SYNC_DESIGN_2026-10-04.md` (see §14). Written befor
 Evidence tags used throughout:
 
 - **[device]** read from the real board on 2026-10-11 (capture kept locally in `notes/_pi_runs/`, git-ignored; it holds network addresses, so only facts are cited here). The five sample files are copied into `tests/fixtures/pi3bplus/`.
+- **[measured]** computed from this project's own run logs or tests on the date given at each use (the run logs are kept locally in `notes/_pi_runs/`, git-ignored).
 - **[docs]** read from official Raspberry Pi documentation on 2026-10-11 (URLs in §11).
 - **[repo]** read from this repo at HEAD `35aba11` (file:line).
 - **[design]** a decision made in this spec, not a measurement.
@@ -73,7 +74,7 @@ Request `{"v":1,"t1":<int ms>}`. Reply `{"v":1,"t1":<echo>,"t2":<int ms>,"t3":<i
 | `session_id` | string, `[A-Za-z0-9_-]{8,64}`; random per sender start (`secrets.token_hex(8)`) |
 | `seq` | integer ≥ 0 (not boolean), +1 per sample cycle, **including cycles where every measurement failed**; a cycle whose send fails still consumes its number, so the receiver sees loss as a gap |
 | `sent_at_ms` | integer epoch UTC ms, Pi clock |
-| `ntp_synchronized` | `true`, `false` or `null` (unknown). Parsed from the `System clock synchronized:` line of `timedatectl` [device: that line exists in the captured output]; refreshed at most every 60 s; never assumed |
+| `ntp_synchronized` | `true`, `false` or `null` (unknown). Parsed from the `System clock synchronized:` line of `timedatectl` [device: that line exists in the captured output]; refreshed at most every 60 s, between cycles and not inside one (§4.3); never assumed |
 | `measurements` | object, may be empty (a heartbeat). Keys must be one of the four names in §5; any other key is rejected individually |
 | `measurements.*.value` | finite number, not boolean, inside the range in §5 (the sender applies the same check and omits a reading that fails it). `NaN`/`Infinity` literals are rejected at parse time |
 | `measurements.*.measured_at_ms` | integer epoch UTC ms, Pi clock, **one per measurement** (the instant that measurement was read) |
@@ -132,6 +133,20 @@ Hand-computed reference cases (used as unit tests):
 ### 4.2 Probe schedule
 
 On sender start: a burst of 5 probes (`--probe-burst`), then one probe every 60 s (`--probe-every`). A probe whose reply does not echo its `t1`, or lacks integer `t2`/`t3`, is discarded. A computed `delay < 0` is kept in the log but excluded from analysis (clock step or quantization).
+
+### 4.3 Where the `ntp_synchronized` check runs (changed 2026-10-13)
+
+`NtpProbe.get()` runs `timedatectl` (3 s timeout, at most once per 60 s). It used to run inside the sample cycle, after the four measurements were read and before `sent_at_ms` was stamped. That kept its run time out of the network leg (§4.1), but it aged the measurements instead: on every cycle where the refresh fell due, `sent_at_ms − measured_at_ms` grew by the run time. **[measured 2026-10-13]** in the first live run (854 messages, 42.6 min): 42 messages (4.9 %), the first one and then one every 60–63 s, were sent 258–349 ms after their measurements were read; the other 812 were sent 1–2 ms after. The 2026-10-12 dry run shows the same pattern (19 of 384 messages, 248–342 ms). With those 42 messages the analyzer's per-measurement end-to-end p95 / p99 were 401.5 / 467.5 ms; without them, by the analyzer's own offset rule (§10.1), 168.5 / 231.5 ms. It is an artifact of the sender, not of the Pi's sensors.
+
+Now the check runs only in `Sender.run()`: once before the first cycle (so the first message carries a real value, or `null` if `timedatectl` cannot be read), and after each cycle's send and any due clock probe, before the idle sleep is computed. `cycle()` only reads the cached value. [design] Consequences:
+
+- No `timedatectl` run can fall between the first measurement read and the request, nor between the `sent_at_ms` stamp and the request.
+- A message carries the result of the most recent check. A refresh that falls due after cycle *n* is first reported in cycle *n*+1, so the flag can lag by one sample interval more than before (at most 60 s + one interval + one run).
+- The sampling grid is unchanged. A refresh that overruns the idle time (a run of the measured 250–350 ms fits easily in the idle time of a 3 s interval; only a command hanging to its 3 s timeout would not) falls under the existing rule: the next cycle starts at once, no catch-up burst.
+- The startup check runs before the grid starts, so it delays the start of sampling by its run time but makes no cycle late.
+- The flag is refreshed only inside `run()`, and the refresh after the last cycle of a counted run (`--count`) still runs before `run()` returns, so the return can be delayed by one run. A caller that calls `run()` repeatedly with idle gaps in between (the tests do; `main()` calls it once) starts each call with the value fetched at the end of the previous call.
+
+Tests: `tests/test_pi_sender.py`, class `NtpPlacementTests` (event order, `sent_at − first measured_at` within a few ms on the cycle that crosses the 60 s refresh, first-message value, unknown stays unknown, overrun without a catch-up burst). **[unverified]** on the Pi: the new order has only run against fake clocks; the expected effect on the next live run is an age at send of 1–2 ms on every message, to be checked there.
 
 ## 5. Features, mapping and units
 
