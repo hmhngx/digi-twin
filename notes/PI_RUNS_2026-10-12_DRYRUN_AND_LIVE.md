@@ -136,7 +136,7 @@ Verified by these two runs:
 - Power and battery: not readable in software on this board.
 - Behaviour under CPU load. The Pi was idle (`cpu_utilization` median 0.08 %).
 - Temperature resolution is 0.538 °C per step, which limits any temperature comparison.
-- Whether the sender fix in §7.1 has the expected effect on the Pi: it has only been run against fake clocks.
+- Whether the sender fix in §7.1 has the expected effect on the Pi: it has run against fake clocks and, on Linux (WSL, x86_64), against the real `adjtimex` call, but not on the Pi.
 
 ## 7. Defects and proposals
 

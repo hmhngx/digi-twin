@@ -74,7 +74,7 @@ Request `{"v":1,"t1":<int ms>}`. Reply `{"v":1,"t1":<echo>,"t2":<int ms>,"t3":<i
 | `session_id` | string, `[A-Za-z0-9_-]{8,64}`; random per sender start (`secrets.token_hex(8)`) |
 | `seq` | integer ≥ 0 (not boolean), +1 per sample cycle, **including cycles where every measurement failed**; a cycle whose send fails still consumes its number, so the receiver sees loss as a gap |
 | `sent_at_ms` | integer epoch UTC ms, Pi clock |
-| `ntp_synchronized` | `true`, `false` or `null` (unknown). Parsed from the `System clock synchronized:` line of `timedatectl` [device: that line exists in the captured output]; refreshed at most every 60 s, between cycles and not inside one (§4.3); never assumed |
+| `ntp_synchronized` | `true`, `false` or `null` (unknown). The kernel clock state, read in-process with `adjtimex` and judged by the same rule `timedatectl` applies for its `System clock synchronized:` line [device: that line exists in the captured `timedatectl` output] (rule and source: §4.3); `timedatectl` runs only as a start/end cross-check, never in the loop; refreshed at most every 60 s, between cycles and not inside one (§4.3); never assumed |
 | `measurements` | object, may be empty (a heartbeat). Keys must be one of the four names in §5; any other key is rejected individually |
 | `measurements.*.value` | finite number, not boolean, inside the range in §5 (the sender applies the same check and omits a reading that fails it). `NaN`/`Infinity` literals are rejected at parse time |
 | `measurements.*.measured_at_ms` | integer epoch UTC ms, Pi clock, **one per measurement** (the instant that measurement was read) |
