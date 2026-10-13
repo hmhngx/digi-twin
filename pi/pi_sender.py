@@ -24,8 +24,13 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 from urllib.parse import urlsplit
+
+try:
+    import ctypes
+except ImportError:  # a Python built without libffi: the kernel clock state is then unknown (None), with a warning
+    ctypes = None
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -41,6 +46,7 @@ CPUFREQ = "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"
 DEFAULT_INTERVAL_SEC = 3.0   # mirrors twin.config PUBLISH_INTERVAL_SEC's default
 TOKEN_ENV = "PI_SHARED_TOKEN"
 NTP_REFRESH_SEC = 60.0
+NTP_MAXERROR_LIMIT_US = 16_000_000  # systemd's ntp_synced(): "synchronized" = reported maximum error under 16 s
 PROBE_GAP_SEC = 0.2
 
 
@@ -154,12 +160,124 @@ def _run_timedatectl() -> str:
     return subprocess.run(["timedatectl"], capture_output=True, text=True, timeout=3, check=False, env=env).stdout
 
 
-class NtpProbe:
-    """Whether the Pi's clock is NTP-synchronized: True / False / None (unknown).
-    Never assumed; refreshed at most every NTP_REFRESH_SEC."""
+def read_timedatectl(runner: Callable[[], str] = _run_timedatectl) -> Optional[bool]:
+    """The `timedatectl` answer (True / False / None), for the start and end cross-check ONLY. It starts a
+    subprocess (a 258-349 ms lag when it ran inside the loop on the Pi 3 B+, measured 2026-10-13), so it is
+    never called between cycles; the loop reads the kernel directly (read_kernel_sync)."""
+    try:
+        return pp.parse_ntp_synchronized(runner())
+    except Exception:  # missing binary, timeout, anything: unknown, not "yes"
+        return None
 
-    def __init__(self, runner: Callable[[], str] = _run_timedatectl, monotonic: Callable[[], float] = time.monotonic):
-        self._runner = runner
+
+class KernelClock(NamedTuple):
+    """What one read-only adjtimex() call returned: its return value, struct timex.status, and
+    struct timex.maxerror in microseconds."""
+
+    rc: int
+    status: int
+    maxerror_us: int
+
+
+def make_timex(long_t: Any) -> Any:
+    """struct timex as declared in <sys/timex.h>; `long_t` is the C `long`. On Linux LP64 (aarch64 and x86_64)
+    sizeof is 208, maxerror is at offset 24 and status at 40: checked with gcc and glibc on x86_64 only, not
+    on the Pi. Layout order: man adjtimex(2); the eleven trailing ints are the kernel header's padding."""
+
+    class Timeval(ctypes.Structure):
+        _fields_ = [("tv_sec", long_t), ("tv_usec", long_t)]
+
+    class Timex(ctypes.Structure):
+        _fields_ = [
+            ("modes", ctypes.c_uint),
+            ("offset", long_t), ("freq", long_t), ("maxerror", long_t), ("esterror", long_t),
+            ("status", ctypes.c_int),
+            ("constant", long_t), ("precision", long_t), ("tolerance", long_t),
+            ("time", Timeval),
+            ("tick", long_t), ("ppsfreq", long_t), ("jitter", long_t),
+            ("shift", ctypes.c_int),
+            ("stabil", long_t), ("jitcnt", long_t), ("calcnt", long_t), ("errcnt", long_t), ("stbcnt", long_t),
+            ("tai", ctypes.c_int),
+            ("_reserved", ctypes.c_int * 11),
+        ]
+
+    return Timex
+
+
+_Timex = make_timex(ctypes.c_long) if ctypes is not None else None
+_adjtimex_fn: Any = None
+
+
+def _libc_adjtimex(tx: Any) -> int:
+    """Call the C library's adjtimex(tx). The process's own symbol table is used (CDLL(None), i.e.
+    dlopen(NULL)) and not ctypes.util.find_library, which starts subprocesses (ldconfig, gcc, ld) on Linux.
+    Raises OSError when adjtimex returns -1, AttributeError when this libc has no adjtimex."""
+    global _adjtimex_fn
+    if _adjtimex_fn is None:
+        fn = ctypes.CDLL(None, use_errno=True).adjtimex
+        fn.argtypes = [ctypes.POINTER(_Timex)]
+        fn.restype = ctypes.c_int
+        _adjtimex_fn = fn
+    rc = _adjtimex_fn(ctypes.byref(tx))
+    if rc < 0:
+        err = ctypes.get_errno()
+        raise OSError(err, os.strerror(err))
+    return rc
+
+
+def read_adjtimex(call: Optional[Callable[[Any], int]] = None) -> Optional[KernelClock]:
+    """One read-only adjtimex (modes = 0: nothing is set) -> (rc, status, maxerror_us), or None when the
+    kernel clock state cannot be read: not Linux, no ctypes, a libc without adjtimex, an OSError, any ctypes
+    error. Never raises. `call(struct)` is the test seam; it fills the struct and returns adjtimex's value."""
+    try:
+        if call is None:
+            if ctypes is None or not sys.platform.startswith("linux"):
+                return None
+            call = _libc_adjtimex
+        tx = _Timex()  # zeroed, so modes = 0
+        rc = call(tx)
+        return KernelClock(int(rc), int(tx.status), int(tx.maxerror))
+    except Exception:  # AttributeError, OSError, ctypes.ArgumentError, ...: unknown, never "yes" or "no"
+        return None
+
+
+def sync_verdict(clock: Optional[KernelClock]) -> Optional[bool]:
+    """True / False from a KernelClock; None when there is none or adjtimex failed (rc < 0)."""
+    if clock is None or clock.rc < 0:
+        return None
+    return clock.maxerror_us < NTP_MAXERROR_LIMIT_US
+
+
+def read_kernel_sync(call: Optional[Callable[[Any], int]] = None) -> Optional[bool]:
+    """Whether the kernel considers the system clock synchronized: True / False, or None when unknown.
+
+    This reproduces what `timedatectl` prints as "System clock synchronized", which is systemd's
+    ntp_synced() (src/timedate/timedated.c; read at v257, the systemd version on the Pi has NOT been
+    checked): adjtimex() succeeded and the reported maximum error (struct timex.maxerror, microseconds) is
+    under 16,000,000, i.e. 16 s. Like systemd, this ignores STA_UNSYNC (systemd: it may have been set to keep
+    the kernel from touching the RTC) and never compares the return value with TIME_ERROR.
+
+    Deliberate difference: systemd maps an adjtimex failure to "not synchronized"; here it is None (unknown),
+    as are non-Linux, a Python without ctypes, a libc without adjtimex and any ctypes error. Never raises.
+
+    The flag is coarse: it says the reported maximum error is under 16 s. It is not a measure of clock
+    quality. The call only reads (modes = 0; unprivileged callers may, adjtimex(2); not tested on the Pi),
+    starts no subprocess, and its cost has not been measured."""
+    return sync_verdict(read_adjtimex(call))
+
+
+def info_stderr(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
+
+
+class NtpProbe:
+    """Whether the Pi's clock is synchronized, as `timedatectl` reports it: True / False / None (unknown).
+    Never assumed; refreshed at most every NTP_REFRESH_SEC. `reader` returns that value (default: the kernel
+    clock state, read_kernel_sync)."""
+
+    def __init__(self, reader: Optional[Callable[[], Optional[bool]]] = None,
+                 monotonic: Callable[[], float] = time.monotonic):
+        self._reader = reader if reader is not None else read_kernel_sync
         self._monotonic = monotonic
         self._value: Optional[bool] = None
         self._at: Optional[float] = None
@@ -169,11 +287,44 @@ class NtpProbe:
         if self._at is not None and now - self._at < NTP_REFRESH_SEC:
             return self._value
         try:
-            self._value = pp.parse_ntp_synchronized(self._runner())
-        except Exception:  # missing binary, timeout, anything: unknown, not "yes"
+            self._value = self._reader()
+        except Exception:  # whatever went wrong: unknown, not "yes"
             self._value = None
         self._at = now
         return self._value
+
+
+class NtpCrossCheck:
+    """Prints, to stderr, the kernel clock state next to the `timedatectl` answer, once at the start of a
+    run and once at its end, so that a disagreement on the Pi can be read off one line. The start call comes
+    before the first CPU baseline read and the end call after the last send, so the `timedatectl` subprocess
+    falls in no reported CPU window. Never raises."""
+
+    def __init__(self, reference: Callable[[], Optional[bool]] = read_timedatectl,
+                 kernel: Callable[[], Optional[KernelClock]] = read_adjtimex,
+                 log: Callable[[str], None] = info_stderr):
+        self._reference = reference
+        self._kernel = kernel
+        self._log = log
+
+    def report(self, when: str) -> None:
+        try:
+            clock = self._kernel()
+        except Exception:
+            clock = None
+        try:
+            reference = self._reference()
+        except Exception:
+            reference = None
+        if clock is None:
+            kernel_text = "adjtimex unavailable -> None"
+        else:
+            kernel_text = "adjtimex rc=%d status=0x%04x maxerror_us=%d -> %s" % (
+                clock.rc, clock.status, clock.maxerror_us, sync_verdict(clock))
+        try:
+            self._log("ntp check (%s): %s; timedatectl -> %s" % (when, kernel_text, reference))
+        except Exception:  # a closed stderr or a full disk must not kill the sender or change its exit code
+            pass
 
 
 # --------------------------------------------------------------------------
@@ -256,6 +407,7 @@ class Sender:
         probe_every: float,
         warn: Callable[[str], None],
         say: Callable[[str], None],
+        cross_check: Optional[Any] = None,
     ):
         self.link = link
         self.sampler = sampler
@@ -269,6 +421,8 @@ class Sender:
         self.probe_every = probe_every
         self.warn = warn
         self.say = say
+        self.cross_check = cross_check  # NtpCrossCheck or None: prints the kernel state next to timedatectl at start and end
+        self._final_checked = False
         self.seq = 0
         self.ntp_synchronized: Optional[bool] = None  # last result of self.ntp.get(); None = not checked or unknown
         self.pending: List[Dict[str, int]] = []
@@ -302,10 +456,20 @@ class Sender:
             del self.pending[: max(0, len(self.pending) - pp.MAX_PROBES)]
 
     def _refresh_ntp(self) -> None:
-        """May run `timedatectl` (up to 3 s; NtpProbe runs it at most every NTP_REFRESH_SEC). Called only
-        from run(), outside cycle(): between the first measurement read and the request it would age every
-        measurement of that message by its run time (258-349 ms measured on the Pi 3 B+, 2026-10-13)."""
+        """Reads the kernel clock state (NtpProbe, at most every NTP_REFRESH_SEC): one system call, no
+        subprocess, cost not measured. Called only from run(), outside cycle(): a slow refresh between the
+        first measurement read and the request would age every measurement of that message (the former
+        `timedatectl` refresh did, by 258-349 ms on the Pi 3 B+, measured 2026-10-13)."""
         self.ntp_synchronized = self.ntp.get()
+
+    def final_check(self) -> None:
+        """The end-of-run cross-check (once): called by main() after run() has returned or been interrupted,
+        i.e. after the last send, so the `timedatectl` subprocess falls in no reported CPU window. Not run
+        after SIGTERM: the process has no handler for it and is killed at once (accepted)."""
+        if self.cross_check is None or self._final_checked:
+            return
+        self._final_checked = True
+        self.cross_check.report("end")
 
     # -- one sample cycle ----------------------------------------------------
     def cycle(self) -> None:
@@ -351,6 +515,10 @@ class Sender:
         if not self._started:
             self._started = True
             self._refresh_ntp()  # so the first message carries a real value; before the grid starts, so it cannot make a cycle late
+            if self.ntp_synchronized is None:  # one warning, at startup; no fallback to timedatectl in the loop
+                self.warn("ntp_synchronized unavailable (kernel clock state not readable via adjtimex); sent as null until it recovers")
+            if self.cross_check is not None:
+                self.cross_check.report("start")  # the timedatectl subprocess: before the first cycle's CPU baseline read
             for i in range(self.probe_burst):
                 if i:
                     self.sleep(PROBE_GAP_SEC)
@@ -469,6 +637,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         probe_every=args.probe_every,
         warn=warn_stderr,
         say=say,
+        cross_check=NtpCrossCheck(),
     )
     say(f"pi_sender session={session_id} -> {args.host}:{args.port} every {args.interval}s (python {sys.version.split()[0]})")
     code = 0
@@ -477,6 +646,10 @@ def main(argv: Optional[List[str]] = None) -> None:
     except AuthRejected as exc:
         print("ERROR " + str(exc), file=sys.stderr, flush=True)
         code = 2
+    except KeyboardInterrupt:
+        pass
+    try:
+        sender.final_check()  # after the last send; SIGTERM kills the process before this line (accepted: no handler)
     except KeyboardInterrupt:
         pass
     say(f"done: {sender.stats['ok']} sent ok, {sender.stats['failed']} failed")

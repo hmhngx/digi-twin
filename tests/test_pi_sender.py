@@ -209,15 +209,16 @@ class SamplerRobustnessTests(unittest.TestCase):
 
 
 class NtpProbeTests(unittest.TestCase):
-    def test_reports_flag_from_timedatectl_and_caches_for_sixty_seconds(self):
+    # Adapted 2026-10-13: the probe no longer parses `timedatectl` text; its reader returns True / False / None.
+    def test_reports_flag_from_the_reader_and_caches_for_sixty_seconds(self):
         calls = []
         now = {"t": 100.0}
 
-        def runner():
+        def reader():
             calls.append(1)
-            return "System clock synchronized: yes\n"
+            return True
 
-        probe = ps.NtpProbe(runner=runner, monotonic=lambda: now["t"])
+        probe = ps.NtpProbe(reader=reader, monotonic=lambda: now["t"])
         self.assertIs(probe.get(), True)
         now["t"] = 159.0
         self.assertIs(probe.get(), True)
@@ -226,16 +227,19 @@ class NtpProbeTests(unittest.TestCase):
         probe.get()
         self.assertEqual(len(calls), 2)
 
-    def test_unknown_when_the_command_fails_or_is_unparsable(self):
+    def test_unknown_when_the_reader_fails_or_says_unknown(self):
         def boom():
-            raise OSError("no timedatectl")
+            raise OSError("no adjtimex")
 
-        self.assertIsNone(ps.NtpProbe(runner=boom, monotonic=lambda: 0.0).get())
-        self.assertIsNone(ps.NtpProbe(runner=lambda: "nonsense", monotonic=lambda: 0.0).get())
+        self.assertIsNone(ps.NtpProbe(reader=boom, monotonic=lambda: 0.0).get())
+        self.assertIsNone(ps.NtpProbe(reader=lambda: None, monotonic=lambda: 0.0).get())
 
     def test_reports_not_synchronized(self):
-        probe = ps.NtpProbe(runner=lambda: "System clock synchronized: no\n", monotonic=lambda: 0.0)
+        probe = ps.NtpProbe(reader=lambda: False, monotonic=lambda: 0.0)
         self.assertIs(probe.get(), False)
+
+    def test_the_default_reader_is_the_kernel_clock_state_not_a_subprocess(self):
+        self.assertIs(ps.NtpProbe()._reader, ps.read_kernel_sync)
 
 
 class FakeLink:
@@ -281,7 +285,7 @@ def make_sender(link, files=None, count=None, interval=3.0, burst=0, probe_every
     sender = ps.Sender(
         link=link,
         sampler=sampler,
-        ntp=ntp or ps.NtpProbe(runner=lambda: "System clock synchronized: yes\n", monotonic=mono),
+        ntp=ntp or ps.NtpProbe(reader=lambda: True, monotonic=mono),
         clock_ms=clock,
         sleep=sleeps.append,
         monotonic=mono,
@@ -335,21 +339,27 @@ class RecordingLink(FakeLink):
 
 class NtpRig:
     """A Pi whose clocks the test controls. The wall clock (epoch ms) and the monotonic clock (s) move
-    together: every wall-clock read costs 1 ms; sleep() and a `timedatectl` run advance both. The runner
-    stands in for `timedatectl`: it costs `ntp_cost_ms` of Pi time, and each run is recorded as a
-    (start, end) window on the Pi wall clock. `answers` is what successive runs print: "yes", "no", or
-    None for a run that fails."""
+    together: every wall-clock read costs 1 ms; sleep() and a refresh advance both. `kernel_reader`
+    stands in for the refresh (the adjtimex read): it deliberately costs `ntp_cost_ms` of Pi time, far more
+    than a system call, so that any misplaced refresh shows; each call is recorded as a (start, end) window
+    on the Pi wall clock. `answers` is what successive refreshes report: "yes" (True), "no" (False), or
+    None (unavailable). `timedatectl` stands in for the start/end cross-check reference, costs the same
+    and is counted separately."""
 
-    def __init__(self, answers=("yes",), ntp_cost_ms=330):
+    def __init__(self, answers=("yes",), ntp_cost_ms=330, reference_answer=True):
         self.wall = 1_000_000
         self.mono = 1000.0
         self.answers = list(answers)
         self.ntp_cost_ms = ntp_cost_ms
-        self.events = []          # "ntp" / "sample" / "post" / "probe", in the order they happened
+        self.reference_answer = reference_answer
+        self.events = []          # "ntp" / "tdctl" / "sample" / "post" / "probe", in the order they happened
         self.cycle_starts = []    # monotonic time at which each sampling cycle began
-        self.ntp_windows = []     # (start, end) of every timedatectl run
+        self.ntp_windows = []     # (start, end) of every refresh
         self.sleeps = []
-        self.runs = 0
+        self.runs = 0             # refreshes (kernel reads by the probe)
+        self.reference_calls = 0  # timedatectl cross-check invocations
+        self.check_lines = []     # what the cross-check printed
+        self.warns = []
 
     def clock(self):
         self.wall += 1
@@ -366,18 +376,22 @@ class NtpRig:
         self.sleeps.append(seconds)
         self.advance(seconds)
 
-    def timedatectl(self):
+    def kernel_reader(self):
         start = self.wall
         self.events.append("ntp")
         self.runs += 1
         self.advance(self.ntp_cost_ms / 1000.0)
         self.ntp_windows.append((start, self.wall))
         answer = self.answers[min(self.runs, len(self.answers)) - 1]
-        if answer is None:
-            raise OSError("timedatectl: not found")
-        return "System clock synchronized: %s\n" % answer
+        return None if answer is None else answer == "yes"
 
-    def build(self, interval=25.0, burst=0, probe_every=1e9):
+    def timedatectl(self):
+        self.events.append("tdctl")
+        self.reference_calls += 1
+        self.advance(self.ntp_cost_ms / 1000.0)
+        return self.reference_answer
+
+    def build(self, interval=25.0, burst=0, probe_every=1e9, cross_check=False, default_reader=False):
         self.link = RecordingLink(self.events, on_post=lambda: self.advance(0.005))  # a request takes 5 ms
         sampler = ps.Sampler(read=CountingStatFiles(), clock_ms=self.clock, warn=lambda m: None,
                              monotonic=self.monotonic)
@@ -389,11 +403,16 @@ class NtpRig:
             return real_sample()
 
         sampler.sample = sample
+        reader = None if default_reader else self.kernel_reader  # None: the real default reader
+        cross = None
+        if cross_check:
+            cross = ps.NtpCrossCheck(reference=self.timedatectl, kernel=lambda: ps.KernelClock(0, 0, 3856),
+                                     log=self.check_lines.append)
         return ps.Sender(
-            link=self.link, sampler=sampler, ntp=ps.NtpProbe(runner=self.timedatectl, monotonic=self.monotonic),
+            link=self.link, sampler=sampler, ntp=ps.NtpProbe(reader=reader, monotonic=self.monotonic),
             clock_ms=self.clock, sleep=self.sleep, monotonic=self.monotonic, session_id="0123456789abcdef",
             interval=interval, probe_burst=burst, probe_every=probe_every,
-            warn=lambda m: None, say=lambda line: None,
+            warn=self.warns.append, say=lambda line: None, cross_check=cross,
         )
 
 
@@ -463,7 +482,7 @@ class SenderLoopTests(unittest.TestCase):
         class SlowNtp:
             def get(inner):
                 start = clock()
-                for _ in range(800):  # `timedatectl` takes 800 ms of Pi time
+                for _ in range(800):  # a (deliberately slow) refresh takes 800 ms of Pi time
                     clock()
                 windows.append((start, clock()))
                 return True
@@ -482,7 +501,7 @@ class SenderLoopTests(unittest.TestCase):
         for message, request in zip(posts, posted_at):
             for start, end in windows:
                 self.assertFalse(start <= request and end >= message["sent_at_ms"],
-                                 "a timedatectl run %r overlaps [sent_at %d, request %d]" % ((start, end), message["sent_at_ms"], request))
+                                 "a refresh %r overlaps [sent_at %d, request %d]" % ((start, end), message["sent_at_ms"], request))
 
     def test_http_200_with_an_unreadable_body_still_counts_as_sent(self):
         link = FakeLink(script=[(200, "not a dict"), (200, None)])
@@ -492,10 +511,12 @@ class SenderLoopTests(unittest.TestCase):
 
 
 class NtpPlacementTests(unittest.TestCase):
-    """Where `timedatectl` runs. In the live run of 2026-10-13 it ran between sampling and sending, so 42 of
-    854 messages were sent 258-349 ms after their measurements were read (every other message: 1-2 ms).
-    These tests use a 25 s interval so that a 60 s refresh falls due within five cycles: cycle starts are
-    at t = 0, 25, 50, 75, 100 s and the refresh is due at the end of the cycle at t = 75 s."""
+    """Where the NTP refresh runs, whatever its implementation. In the live run of 2026-10-13 the former
+    `timedatectl` refresh ran between sampling and sending, so 42 of 854 messages were sent 258-349 ms after
+    their measurements were read (every other message: 1-2 ms). The rig's refresh deliberately costs 330 ms
+    so that any misplacement shows. These tests use a 25 s interval so that a 60 s refresh falls due within
+    five cycles: cycle starts are at t = 0, 25, 50, 75, 100 s and the refresh is due at the end of the cycle
+    at t = 75 s."""
 
     def test_no_message_is_sent_later_than_a_few_ms_after_its_first_measurement_read(self):
         rig = NtpRig(answers=("yes", "no"))
@@ -509,7 +530,7 @@ class NtpPlacementTests(unittest.TestCase):
                                  "seq %d was sent %d ms after its first measurement" % (post["seq"], post["sent_at_ms"] - earliest))
             for start, end in rig.ntp_windows:
                 self.assertFalse(start <= post["sent_at_ms"] and end >= earliest,
-                                 "a timedatectl run %r overlaps [first measurement %d, sent_at %d]" % ((start, end), earliest, post["sent_at_ms"]))
+                                 "a refresh %r overlaps [first measurement %d, sent_at %d]" % ((start, end), earliest, post["sent_at_ms"]))
 
     def test_the_sampling_grid_does_not_move_when_the_refresh_runs(self):
         rig = NtpRig(answers=("yes", "no"))
@@ -567,6 +588,117 @@ class NtpPlacementTests(unittest.TestCase):
         self.assertAlmostEqual(long_gaps[0], 2.505, places=6)  # 5 ms request + 2.5 s refresh, then the next cycle starts at once; the grid resumes after it
 
 
+class KernelNtpCheckTests(unittest.TestCase):
+    """The refresh reads the kernel clock state (adjtimex); `timedatectl` runs only as a cross-check, once
+    before the first cycle (before the first CPU baseline read) and once at the end of the run, never in
+    the loop. Interval 25 s and 10 cycles: t = 0 ... 225 s, more than three 60 s refresh intervals."""
+
+    def test_a_run_makes_exactly_two_timedatectl_calls_and_none_inside_the_loop(self):
+        rig = NtpRig(answers=("yes",))
+        sender = rig.build(cross_check=True)
+        sender.run(count=10)
+        sender.final_check()
+        sender.final_check()  # once only
+        self.assertEqual(rig.reference_calls, 2)
+        events = rig.events
+        self.assertGreaterEqual(events.count("ntp"), 4)  # the startup read and at least three later refreshes
+        self.assertEqual(events[:2], ["ntp", "tdctl"])  # startup: before the first sample, hence before its CPU baseline read
+        self.assertLess(events.index("tdctl"), events.index("sample"))
+        self.assertEqual(events[-1], "tdctl")  # end of run: after the last send, so in no further CPU window
+        self.assertNotIn("tdctl", events[2:-1])
+        self.assertEqual(len(rig.check_lines), 2)
+        self.assertTrue(rig.check_lines[0].startswith("ntp check (start): adjtimex rc=0 status=0x0000 maxerror_us=3856 -> True; timedatectl -> True"))
+        self.assertTrue(rig.check_lines[1].startswith("ntp check (end): "))
+
+    def test_a_broken_stderr_stops_neither_the_run_nor_the_end_check(self):
+        def broken(line):
+            raise BrokenPipeError("stderr closed")
+
+        rig = NtpRig(answers=("yes",))
+        sender = rig.build()
+        sender.cross_check = ps.NtpCrossCheck(reference=rig.timedatectl, kernel=lambda: ps.KernelClock(0, 0, 1), log=broken)
+        sender.run(count=3)  # the start line is lost, the run goes on
+        sender.final_check()  # and so does the end
+        self.assertEqual(len(telemetry_posts(rig.link)), 3)
+        self.assertEqual(rig.reference_calls, 2)
+
+    def test_messages_carry_the_adjtimex_answer_not_the_timedatectl_answer(self):
+        rig = NtpRig(answers=("yes",), reference_answer=False)
+        rig.build(cross_check=True).run(count=3)
+        self.assertEqual([m["ntp_synchronized"] for m in telemetry_posts(rig.link)], [True, True, True])
+
+    def test_unavailable_adjtimex_sends_null_warns_once_and_never_falls_back_to_timedatectl(self):
+        rig = NtpRig(answers=(None,))
+        sender = rig.build(cross_check=True)
+        sender.run(count=10)
+        sender.final_check()
+        self.assertEqual([m["ntp_synchronized"] for m in telemetry_posts(rig.link)], [None] * 10)
+        warnings = [w for w in rig.warns if "adjtimex" in w]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("ntp_synchronized unavailable", warnings[0])
+        self.assertEqual(rig.reference_calls, 2)  # the start and end cross-check only
+        self.assertNotIn("tdctl", rig.events[2:-1])
+
+    def test_a_flag_that_is_known_at_startup_raises_no_warning(self):
+        rig = NtpRig(answers=("yes", None))
+        rig.build().run(count=5)
+        self.assertEqual(rig.warns, [])
+
+    def test_message_keys_are_unchanged_and_the_flag_stays_true_false_or_null(self):
+        rig = NtpRig(answers=("yes", None, "no"))
+        rig.build().run(count=10)  # reads: startup yes; the refresh after cycle 3 says unknown; after cycle 6 and 9, no
+        posts = telemetry_posts(rig.link)
+        for m in posts:
+            self.assertEqual(set(m), {"v", "session_id", "seq", "sent_at_ms", "ntp_synchronized", "measurements", "probes"})
+            self.assertTrue(m["ntp_synchronized"] is None or isinstance(m["ntp_synchronized"], bool))
+        self.assertEqual([m["ntp_synchronized"] for m in posts], [True] * 4 + [None] * 3 + [False] * 3)
+
+    def test_the_default_reader_loop_never_starts_a_subprocess(self):
+        rig = NtpRig()
+        with mock.patch.object(ps.subprocess, "run") as run, mock.patch.object(ps.subprocess, "Popen") as popen:
+            rig.build(default_reader=True).run(count=10)  # the real default reader, across several refreshes
+        run.assert_not_called()
+        popen.assert_not_called()
+        self.assertEqual(len(telemetry_posts(rig.link)), 10)
+
+
+class MainExitTests(unittest.TestCase):
+    """main() runs the end-of-run cross-check after the existing try/except. SIGTERM stays uncovered: the
+    process has no handler for it, so it is killed at once and nothing after run() executes."""
+
+    def run_main(self, run_effect=None, final_effect=None):
+        with mock.patch.dict("os.environ", {"PI_SHARED_TOKEN": "good-token_123.~"}, clear=True), \
+                mock.patch.object(ps, "Sender") as sender_cls, \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            sender = sender_cls.return_value
+            sender.stats = {"ok": 0, "failed": 0}
+            sender.run.side_effect = run_effect
+            sender.final_check.side_effect = final_effect
+            with self.assertRaises(SystemExit) as ctx:
+                ps.main(["--receiver", "http://192.0.2.10:8765", "--count", "1"])
+        return sender, sender_cls, ctx.exception.code
+
+    def test_end_check_runs_after_a_normal_finish(self):
+        sender, sender_cls, code = self.run_main()
+        self.assertEqual([c[0] for c in sender.method_calls], ["run", "final_check"])
+        self.assertEqual(code, 0)
+        self.assertIsInstance(sender_cls.call_args.kwargs["cross_check"], ps.NtpCrossCheck)
+
+    def test_end_check_runs_after_ctrl_c(self):
+        sender, _, code = self.run_main(run_effect=KeyboardInterrupt())
+        self.assertEqual([c[0] for c in sender.method_calls], ["run", "final_check"])
+        self.assertEqual(code, 0)
+
+    def test_end_check_runs_after_a_rejected_token_and_the_exit_code_stays_2(self):
+        sender, _, code = self.run_main(run_effect=ps.AuthRejected("rejected"))
+        self.assertEqual([c[0] for c in sender.method_calls], ["run", "final_check"])
+        self.assertEqual(code, 2)
+
+    def test_a_second_ctrl_c_during_the_end_check_is_not_a_traceback(self):
+        sender, _, code = self.run_main(final_effect=KeyboardInterrupt())
+        self.assertEqual(code, 0)
+
+
 class ProbeScheduleTests(unittest.TestCase):
     def test_startup_burst_probes_ride_on_the_first_telemetry_message(self):
         link = FakeLink(clock=stepping_clock(1_000_050, step=1))
@@ -588,7 +720,7 @@ class ProbeScheduleTests(unittest.TestCase):
 
         link = FakeLink(script=[(200, {"v": 1, "t1": 1000, "t2": 1104, "t3": 1104})])
         sampler, _, _ = make_sampler()
-        sender = ps.Sender(link=link, sampler=sampler, ntp=ps.NtpProbe(runner=lambda: "", monotonic=lambda: 0.0),
+        sender = ps.Sender(link=link, sampler=sampler, ntp=ps.NtpProbe(reader=lambda: None, monotonic=lambda: 0.0),
                            clock_ms=clock, sleep=lambda s: None, monotonic=lambda: 0.0, session_id="0123456789abcdef",
                            interval=3.0, probe_burst=0, probe_every=60.0, warn=lambda m: None, say=lambda l: None)
         probe = sender.probe_once()
@@ -753,7 +885,7 @@ class EndToEndTests(unittest.TestCase):
         link = ps.HttpLink("127.0.0.1", port, token, timeout=timeout)
         sampler = ps.Sampler(read=files, clock_ms=pp.now_ms, warn=lambda m: None, monotonic=stepping_mono())
         return ps.Sender(link=link, sampler=sampler,
-                         ntp=ps.NtpProbe(runner=lambda: "System clock synchronized: yes\n", monotonic=lambda: 0.0),
+                         ntp=ps.NtpProbe(reader=lambda: True, monotonic=lambda: 0.0),
                          clock_ms=pp.now_ms, sleep=lambda s: None, monotonic=lambda: 0.0,
                          session_id="e2e0123456789abc", interval=3.0, probe_burst=burst, probe_every=60.0,
                          warn=lambda m: None, say=lambda l: None)
