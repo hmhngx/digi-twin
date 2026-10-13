@@ -1,5 +1,7 @@
 # Pi session 1: plan and pass criteria
 
+Amended 2026-10-13, before the run: section 2 steps 3-5 now keep the logger running during the shakedown schedule and say how to stop; section 3 is unchanged.
+
 Written 2026-10-13, **before the run**. Nothing below has been measured on the Pi, and the pass criteria in section 3 are fixed now: they are not to be changed after the data has been seen. If one has to change, a new dated note says so and this one stays on record. Companion notes: `notes/PI_RUNS_2026-10-12_DRYRUN_AND_LIVE.md` (the live-run figures below come only from there), `notes/PI_ACCURACY_PROTOCOL_2026-10-13.md` (the tools, and the step 0 check), `notes/PI_TELEMETRY_SPEC_2026-10-11.md`.
 
 Source tags, as in the run note: **[analyzer]**, **[recomputed]**, **[user-reported, not on disk]**. One more, as in the spec: **[design]**, a number or rule chosen by us before the run, not a measurement.
@@ -15,9 +17,9 @@ Source tags, as in the run note: **[analyzer]**, **[recomputed]**, **[user-repor
 
 1. As the normal user (not root), the step 0 check of the protocol note §7, and `vcgencmd get_throttled`. Run `vcgencmd get_throttled` again after the last stage.
 2. **Sender alone for 10 minutes:** the sender from 7817f4a or later on the Pi, the receiver on the laptop as for the live run. Nothing else is started.
-3. **Then the reference logger for 20 minutes,** next to the running sender (`python3 pi/reference_logger.py --out reference_<name>.jsonl`).
-4. **Then the shakedown schedule,** with the sender still running (`python3 pi/stimulus.py --schedule pi/stimulus_schedule.shakedown.json --out stimulus_<name>.jsonl`; `--print-plan` shows a total of 90 s).
-5. Stop the sender last, with Ctrl+C. The sender prints its `ntp check (end)` line after an interrupt, not after SIGTERM, so criterion B needs Ctrl+C. Keep the sender's stderr: both `ntp check` lines are in it.
+3. **Then the reference logger for 20 minutes,** next to the running sender (`python3 pi/reference_logger.py --out reference_<name>.jsonl`). The logger is NOT stopped before the shakedown; it keeps running.
+4. **Then the shakedown schedule,** with the sender and the reference logger still running (`python3 pi/stimulus.py --schedule pi/stimulus_schedule.shakedown.json --out stimulus_<name>.jsonl`; `--print-plan` shows a total of 90 s).
+5. After the stimulus has finished, wait about 60 s, then stop the logger with Ctrl+C, then stop the sender last, also with Ctrl+C. The sender prints its `ntp check (end)` line after an interrupt, not after SIGTERM, so criterion B needs Ctrl+C. Keep the sender's stderr: both `ntp check` lines are in it.
 
 ## 3. Pass criteria
 
