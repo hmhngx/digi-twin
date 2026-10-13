@@ -152,7 +152,7 @@ Verified by these two runs:
 
 So the once-a-minute `timedatectl` run is visible in the Pi's CPU and frequency series. The run's own CPU use was not isolated by an experiment (for example a run with the check disabled), and the governor was not read.
 
-**Open defect: this change does not remove it.** After the fix the `timedatectl` run still happens once a minute, now after the send and inside the idle time, so it still falls into the CPU averaging window of the next message (by the order of the code; not yet confirmed on the Pi). The CPU and frequency series therefore keep a bump every 60–63 s that comes from the measurement itself: 42 of 853 CPU values (4.9 %) at 2.34–3.18 % against a median of 0.08 %. Options, all **unverified** and none implemented:
+**Open defect: this change does not remove it.** The CPU averaging windows are contiguous 3000 ms intervals between consecutive `/proc/stat` reads (§3.4 for the live run; `Sampler._cpu` keeps each good read as the next baseline). The `timedatectl` run still happens once a minute and follows message n's read in the old order and in the new one (now after the send and inside the idle time), so it falls into the window of message n+1 in both. This is derived from the code; it has not been measured on the Pi after the fix, and neither has the size of the effect after the fix. The CPU and frequency series are therefore expected to keep a bump every 60–63 s that comes from the measurement itself: 42 of 853 CPU values (4.9 %) at 2.34–3.18 % against a median of 0.08 % (live run, old order). Options, all **unverified** and none implemented:
 
 1. Read the kernel's clock-sync state directly with `adjtimex` instead of running `timedatectl`, after validating on the Pi that it agrees with `timedatectl`. Whether the standard library offers a usable call on Python 3.9 to 3.13 has not been checked.
 2. Refresh every 300 s instead of 60 s. That would cut the number of affected messages by a factor of five and leave the flag up to 300 s old.
@@ -172,7 +172,7 @@ The analyzer pairs each sample with the minimum-delay probe within ±300 s. With
 
 ## 8. Next steps
 
-1. Re-run a measurement run with the fixed sender on the Pi and check that age at send is 1–2 ms on every message.
+1. Re-run a measurement run with the fixed sender on the Pi and check that age at send is 1–2 ms on every message, and measure the size of the bump on the message after each `timedatectl` run (the live run before the fix: 1400000 kHz in 42 of 42, CPU 2.34–3.18 %).
 2. Add a controlled CPU load and an independent reference reading, so accuracy can be measured.
 3. Check that `pi_0` events reach InfluxDB (re-create the Ditto-to-Mosquitto connection first).
 4. Ask Prof. Siddiqui about power measurement.
